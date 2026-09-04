@@ -305,3 +305,50 @@ fn test_diff_headers_distinguish_identical_basenames() {
     let header_line = diff_lines.iter().find(|l| l.contains("METRIC")).expect("Header not found");
     assert!(header_line.contains("[A]") || header_line.contains("target/debug/app.exe"));
 }
+#[test]
+fn test_cfg_false_positive_without_load_config() {
+    // PE with GUARD_CF flag (0x4000), but NO Load Config Directory (RVA 0)
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    // DllCharacteristics with GUARD_CF (0x4000)
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes());
+    // Data Directory 10 (Load Config) is at opt_hdr + 112 + (10 * 8) = opt_hdr + 192 -> leaves as 0!
+
+    let report = binlens::pe::parse_pe(&pe, "test_cfg_fake.exe").expect("Parse failed");
+    assert_eq!(
+        report.mitigations.cfg, false,
+        "CFG must be false if Load Config is missing even if GUARD_CF flag is set"
+    );
+}
+
+#[test]
+fn test_safeseh_false_positive_without_load_config() {
+    // 32-bit PE without NO_SEH flag, but NO Load Config Directory
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x014cu16.to_le_bytes()); // x86 32-bit
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&224u16.to_le_bytes());
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x10bu16.to_le_bytes()); // PE32
+    // DllCharacteristics = 0 (NO_SEH is NOT set)
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0u16.to_le_bytes());
+    // Load Config Directory (index 10) is 0
+
+    let report = binlens::pe::parse_pe(&pe, "test_safeseh_fake.exe").expect("Parse failed");
+    assert_eq!(
+        report.mitigations.seh, false,
+        "SafeSEH must be false if Load Config is missing in 32-bit PE"
+    );
+}

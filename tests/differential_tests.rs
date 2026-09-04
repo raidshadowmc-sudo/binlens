@@ -1,0 +1,106 @@
+﻿use std::process::Command;
+use binlens::pe::parse_pe;
+
+#[test]
+fn test_differential_with_pefile_on_system32_cmd() {
+    let target = r"C:\Windows\System32\cmd.exe";
+    if !std::path::Path::new(target).exists() {
+        eprintln!("Skipping test: {} does not exist", target);
+        return;
+    }
+
+    let data = std::fs::read(target).expect("Failed to read cmd.exe");
+    let report = parse_pe(&data, "cmd.exe").expect("binlens failed to parse cmd.exe");
+
+    // Query pefile for ground truth
+    let py_script = r#"
+import pefile
+import json
+import sys
+
+pe = pefile.PE(sys.argv[1])
+result = {
+    "imphash": pe.get_imphash(),
+    "entry_point": pe.OPTIONAL_HEADER.AddressOfEntryPoint,
+    "sections_count": len(pe.sections),
+    "sections": [{"name": s.Name.decode('utf-8', errors='ignore').rstrip('\x00'), "raw_size": s.SizeOfRawData} for s in pe.sections]
+}
+print(json.dumps(result))
+"#;
+
+    let output = Command::new("python")
+        .args(["-c", py_script, target])
+        .output()
+        .expect("Failed to execute python with pefile");
+
+    assert!(output.status.success(), "Python pefile execution failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    let pefile_data: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON from pefile");
+
+    // Compare Imphash
+    let pefile_imphash = pefile_data["imphash"].as_str().unwrap();
+    assert_eq!(report.imphash.as_deref(), Some(pefile_imphash), "Imphash differential mismatch on cmd.exe!");
+
+    // Compare EntryPoint
+    let pefile_entry = pefile_data["entry_point"].as_u64().unwrap();
+    assert_eq!(report.entry_point, pefile_entry, "Entry point mismatch on cmd.exe!");
+
+    // Compare Section Count
+    let pefile_sec_count = pefile_data["sections_count"].as_u64().unwrap() as usize;
+    assert_eq!(report.sections.len(), pefile_sec_count, "Section count mismatch on cmd.exe!");
+
+    // Compare Section Names & Sizes
+    let pefile_sections = pefile_data["sections"].as_array().unwrap();
+    for (i, s) in pefile_sections.iter().enumerate() {
+        let expected_name = s["name"].as_str().unwrap();
+        let expected_size = s["raw_size"].as_u64().unwrap();
+        assert_eq!(report.sections[i].name, expected_name);
+        assert_eq!(report.sections[i].raw_size, expected_size);
+    }
+}
+
+#[test]
+fn test_differential_exports_with_pefile_on_kernel32() {
+    let target = r"C:\Windows\System32\kernel32.dll";
+    if !std::path::Path::new(target).exists() {
+        eprintln!("Skipping test: {} does not exist", target);
+        return;
+    }
+
+    let data = std::fs::read(target).expect("Failed to read kernel32.dll");
+    let report = parse_pe(&data, "kernel32.dll").expect("binlens failed to parse kernel32.dll");
+
+    let py_script = r#"
+import pefile
+import json
+import sys
+
+pe = pefile.PE(sys.argv[1])
+exports = []
+if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+    for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols[:20]:
+        name = exp.name.decode('utf-8') if exp.name else f"Ordinal#{exp.ordinal}"
+        exports.append({"name": name, "ordinal": exp.ordinal, "rva": exp.address})
+print(json.dumps(exports))
+"#;
+
+    let output = Command::new("python")
+        .args(["-c", py_script, target])
+        .output()
+        .expect("Failed to execute python with pefile");
+
+    assert!(output.status.success(), "Python pefile execution failed");
+    let pefile_exports: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+
+    assert!(!report.exports.is_empty(), "binlens found 0 exports in kernel32.dll");
+
+    for (i, exp) in pefile_exports.iter().enumerate() {
+        let expected_name = exp["name"].as_str().unwrap();
+        let expected_ord = exp["ordinal"].as_u64().unwrap() as u32;
+        let expected_rva = exp["rva"].as_u64().unwrap() as u32;
+
+        let bl_exp = &report.exports[i];
+        assert_eq!(bl_exp.name, expected_name, "Export name mismatch at index {}", i);
+        assert_eq!(bl_exp.ordinal, expected_ord, "Export ordinal mismatch at index {}", i);
+        assert_eq!(bl_exp.rva, expected_rva, "Export RVA mismatch at index {}", i);
+    }
+}
