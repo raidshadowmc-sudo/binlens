@@ -1,4 +1,4 @@
-﻿use crate::entropy::calculate_entropy;
+use crate::entropy::calculate_entropy;
 use crate::types::{BinaryFormat, BinaryReport, ExportInfo, ImportInfo, SectionInfo, SecurityMitigations};
 use md5::Md5;
 use sha2::{Digest, Sha256};
@@ -158,7 +158,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         high_entropy_va: is_64 && (dll_chars & 0x0020) != 0,
         aslr: (dll_chars & 0x0040) != 0,
         dep_nx: (dll_chars & 0x0100) != 0,
-        seh: is_64, // on x64 SEH is table-based in .pdata; on 32-bit requires SafeSEH table in Load Config
+        seh: is_64 && (dll_chars & 0x0400) == 0, // on x64 SEH is table-based in .pdata (unless NO_SEH); on 32-bit requires SafeSEH table in Load Config
         cfg: false,  // requires both GUARD_CF flag and valid Load Config function pointer
         authenticode_signed: false,
         has_rwx_sections: false,
@@ -244,9 +244,10 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         if let Some(lc_offset) = rva_to_offset(load_config_rva, &raw_sections) {
             let lc_size = read_u32(data, lc_offset).unwrap_or(0) as usize;
             if is_64 {
-                // In 64-bit load config: GuardCFCheckFunctionPointer is at offset 88 (size >= 96)
-                if (dll_chars & 0x4000) != 0 && lc_size >= 96 && lc_offset + 96 <= data.len() {
-                    let guard_check = read_u64(data, lc_offset + 88).unwrap_or(0);
+                // In 64-bit load config: GuardCFCheckFunctionPointer is at offset 112 (size >= 120)
+                // (offset 88 is SecurityCookie, offset 96 is SEHandlerTable, offset 104 is SEHandlerCount)
+                if (dll_chars & 0x4000) != 0 && lc_size >= 120 && lc_offset + 120 <= data.len() {
+                    let guard_check = read_u64(data, lc_offset + 112).unwrap_or(0);
                     if guard_check != 0 {
                         mitigations.cfg = true;
                     }

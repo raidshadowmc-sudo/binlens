@@ -1,4 +1,4 @@
-﻿use binlens::elf::parse_elf;
+use binlens::elf::parse_elf;
 use binlens::pe::{parse_pe, rva_to_offset, RawSection};
 use binlens::diff::compare_binaries;
 use binlens::types::{BinaryReport, BinaryFormat, SecurityMitigations};
@@ -351,4 +351,156 @@ fn test_safeseh_false_positive_without_load_config() {
         report.mitigations.seh, false,
         "SafeSEH must be false if Load Config is missing in 32-bit PE"
     );
+}
+
+#[test]
+fn test_cfg_x64_offset_cookie_vs_guard_check() {
+    // x64 PE with GUARD_CF flag (0x4000), Load Config present (size 128),
+    // SecurityCookie (offset 88) is non-zero, but GuardCFCheckFunctionPointer (offset 112) is 0.
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes()); // opt hdr size
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    // DllCharacteristics with GUARD_CF (0x4000)
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes());
+
+    // Load Config Directory entry (Data Directory 10 at opt_hdr + 112 + 10 * 8 = opt_hdr + 192)
+    let lc_entry = opt_hdr + 192;
+    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[lc_entry+4..lc_entry+8].copy_from_slice(&128u32.to_le_bytes()); // Size 128
+
+    // Section header: .rdata at opt_hdr + 240
+    let sec_hdr = opt_hdr + 240;
+    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize
+    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtAddr = 0x200
+    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
+    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
+    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes()); // Characteristics
+
+    // Load Config at offset 0x200:
+    let lc_offset = 0x200;
+    pe[lc_offset..lc_offset+4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128 (0x80)
+    // Offset 88: SecurityCookie != 0
+    pe[lc_offset+88..lc_offset+96].copy_from_slice(&0x1234_5678_9ABC_DEF0_u64.to_le_bytes());
+    // Offset 112: GuardCFCheckFunctionPointer == 0
+    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0_u64.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_cfg_cookie.exe").expect("Parse failed");
+    assert_eq!(
+        report.mitigations.cfg, false,
+        "CFG must be FALSE when GuardCFCheckFunctionPointer (offset 112) is 0, even if SecurityCookie (offset 88) is non-zero"
+    );
+}
+
+#[test]
+fn test_cfg_x64_valid_guard_check_passes() {
+    // x64 PE with GUARD_CF flag (0x4000), Load Config present (size 128),
+    // and valid GuardCFCheckFunctionPointer (offset 112) != 0.
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes());
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
+
+    // Load Config Directory entry
+    let lc_entry = opt_hdr + 192;
+    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[lc_entry+4..lc_entry+8].copy_from_slice(&128u32.to_le_bytes());
+
+    // Section header: .rdata
+    let sec_hdr = opt_hdr + 240;
+    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes());
+
+    // Load Config at offset 0x200:
+    let lc_offset = 0x200;
+    pe[lc_offset..lc_offset+4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128
+    // Offset 112: GuardCFCheckFunctionPointer != 0
+    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_cfg_valid.exe").expect("Parse failed");
+    assert_eq!(report.mitigations.cfg, true, "CFG must be TRUE when GuardCFCheckFunctionPointer is non-zero");
+}
+
+#[test]
+fn test_cfg_x64_truncated_load_config_fails() {
+    // x64 PE with GUARD_CF flag (0x4000), but Load Config size is only 96 bytes (does not cover offset 112)
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes());
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
+
+    // Load Config Directory entry: size 96
+    let lc_entry = opt_hdr + 192;
+    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[lc_entry+4..lc_entry+8].copy_from_slice(&96u32.to_le_bytes());
+
+    // Section header: .rdata
+    let sec_hdr = opt_hdr + 240;
+    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes());
+
+    // Load Config at offset 0x200: Size = 96
+    let lc_offset = 0x200;
+    pe[lc_offset..lc_offset+4].copy_from_slice(&96u32.to_le_bytes());
+    // Even if memory at 112 has bytes, struct size 96 doesn't reach it
+    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_cfg_trunc.exe").expect("Parse failed");
+    assert_eq!(report.mitigations.cfg, false, "CFG must be FALSE when Load Config size < 120");
+}
+
+#[test]
+fn test_seh_x64_no_seh_flag() {
+    // x64 PE with IMAGE_DLLCHARACTERISTICS_NO_SEH (0x0400)
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    // DllCharacteristics: NO_SEH (0x0400)
+    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x0400u16.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_no_seh.exe").expect("Parse failed");
+    assert_eq!(report.mitigations.seh, false, "SEH must be false on x64 if NO_SEH flag is set");
 }

@@ -1,4 +1,4 @@
-﻿use std::process::Command;
+use std::process::Command;
 use binlens::pe::parse_pe;
 
 #[test]
@@ -104,3 +104,75 @@ print(json.dumps(exports))
         assert_eq!(bl_exp.rva, expected_rva, "Export RVA mismatch at index {}", i);
     }
 }
+
+#[test]
+fn test_differential_cfg_with_pefile() {
+    let targets = [
+        r"C:\Windows\System32\cmd.exe",
+        r"C:\Windows\System32\notepad.exe",
+        r"C:\Windows\System32\FileHistory.exe",
+        r"C:\Windows\System32\kernel32.dll",
+    ];
+
+    let py_script = r#"
+import pefile
+import json
+import sys
+
+results = {}
+for path in sys.argv[1:]:
+    try:
+        pe = pefile.PE(path)
+        dll_chars = pe.OPTIONAL_HEADER.DllCharacteristics
+        has_guard_flag = bool(dll_chars & 0x4000)
+        has_lc = hasattr(pe, 'DIRECTORY_ENTRY_LOAD_CONFIG')
+        guard_ptr = getattr(pe.DIRECTORY_ENTRY_LOAD_CONFIG.struct, 'GuardCFCheckFunctionPointer', 0) if has_lc else 0
+        cfg_active = has_guard_flag and (guard_ptr != 0)
+        results[path] = {
+            "guard_flag": has_guard_flag,
+            "has_load_config": has_lc,
+            "guard_check_ptr": guard_ptr,
+            "cfg": cfg_active
+        }
+    except Exception as e:
+        results[path] = {"error": str(e)}
+
+print(json.dumps(results))
+"#;
+
+    let existing_targets: Vec<&str> = targets
+        .iter()
+        .copied()
+        .filter(|t| std::path::Path::new(t).exists())
+        .collect();
+
+    if existing_targets.is_empty() {
+        eprintln!("Skipping test: no Windows target binaries found");
+        return;
+    }
+
+    let mut cmd_args = vec!["-c", py_script];
+    cmd_args.extend(existing_targets.iter());
+
+    let output = Command::new("python")
+        .args(&cmd_args)
+        .output()
+        .expect("Failed to execute python with pefile");
+
+    assert!(output.status.success(), "Python execution failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    let ground_truth: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+
+    for target in &existing_targets {
+        let data = std::fs::read(target).expect("Failed to read binary");
+        let file_name = std::path::Path::new(target).file_name().unwrap().to_str().unwrap();
+        let report = parse_pe(&data, file_name).expect("Failed to parse PE with binlens");
+
+        let expected_cfg = ground_truth[*target]["cfg"].as_bool().expect("Missing cfg in python output");
+        assert_eq!(
+            report.mitigations.cfg, expected_cfg,
+            "Differential CFG mismatch for {}: binlens reported {}, pefile reported {}",
+            target, report.mitigations.cfg, expected_cfg
+        );
+    }
+}
+
