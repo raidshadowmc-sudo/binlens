@@ -3,7 +3,7 @@ use crate::types::{BinaryFormat, BinaryReport, ExportInfo, ImportInfo, SectionIn
 use md5::Md5;
 use sha2::{Digest, Sha256};
 
-fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
+pub fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
     if offset + 2 <= buf.len() {
         Some(u16::from_le_bytes([buf[offset], buf[offset + 1]]))
     } else {
@@ -11,7 +11,7 @@ fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
     }
 }
 
-fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
+pub fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
     if offset + 4 <= buf.len() {
         Some(u32::from_le_bytes([
             buf[offset],
@@ -24,7 +24,7 @@ fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
     }
 }
 
-fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
+pub fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
     if offset + 8 <= buf.len() {
         Some(u64::from_le_bytes([
             buf[offset],
@@ -41,7 +41,7 @@ fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
     }
 }
 
-fn read_cstring(buf: &[u8], offset: usize) -> Option<String> {
+pub fn read_cstring(buf: &[u8], offset: usize) -> Option<String> {
     if offset >= buf.len() {
         return None;
     }
@@ -56,21 +56,34 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-struct RawSection {
+#[derive(Debug, Clone)]
+pub struct RawSection {
     pub virtual_address: u32,
     pub virtual_size: u32,
     pub pointer_to_raw_data: u32,
     pub size_of_raw_data: u32,
 }
 
-fn rva_to_offset(rva: u32, sections: &[RawSection]) -> Option<usize> {
+pub fn rva_to_offset(rva: u32, sections: &[RawSection]) -> Option<usize> {
+    if sections.is_empty() {
+        return Some(rva as usize);
+    }
+    let first_va = sections.iter().map(|s| s.virtual_address).min().unwrap_or(0x1000);
+    if rva < first_va {
+        return Some(rva as usize);
+    }
+
     for s in sections {
+        if s.size_of_raw_data == 0 || s.pointer_to_raw_data == 0 {
+            continue;
+        }
         let va = s.virtual_address;
-        let sz = s.virtual_size.max(s.size_of_raw_data);
-        if rva >= va && rva < va + sz {
+        if rva >= va {
             let delta = rva - va;
-            let offset = s.pointer_to_raw_data as usize + delta as usize;
-            return Some(offset);
+            if delta < s.size_of_raw_data {
+                let offset = s.pointer_to_raw_data as usize + delta as usize;
+                return Some(offset);
+            }
         }
     }
     None
@@ -141,10 +154,10 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     };
 
     let mut mitigations = SecurityMitigations {
-        high_entropy_va: (dll_chars & 0x0020) != 0,
+        high_entropy_va: is_64 && (dll_chars & 0x0020) != 0,
         aslr: (dll_chars & 0x0040) != 0,
         dep_nx: (dll_chars & 0x0100) != 0,
-        seh: (dll_chars & 0x0400) == 0,
+        seh: is_64 || (dll_chars & 0x0400) == 0,
         cfg: (dll_chars & 0x4000) != 0,
         authenticode_signed: false,
         has_rwx_sections: false,
@@ -154,10 +167,17 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     let export_dir_rva = read_u32(data, data_dirs_offset).unwrap_or(0);
     let import_dir_rva = read_u32(data, data_dirs_offset + 8).unwrap_or(0);
-    let cert_dir_size = read_u32(data, data_dirs_offset + 32 + 4).unwrap_or(0);
+    let cert_dir_offset = read_u32(data, data_dirs_offset + 32).unwrap_or(0) as usize;
+    let cert_dir_size = read_u32(data, data_dirs_offset + 32 + 4).unwrap_or(0) as usize;
+    let load_config_rva = read_u32(data, data_dirs_offset + 80).unwrap_or(0);
 
-    if cert_dir_size > 0 {
-        mitigations.authenticode_signed = true;
+    // Authenticode Certificate Table check
+    if cert_dir_offset > 0 && cert_dir_size >= 8 && cert_dir_offset + cert_dir_size <= data.len() {
+        let w_cert_type = read_u16(data, cert_dir_offset + 6).unwrap_or(0);
+        if w_cert_type == 0x0002 {
+            // WIN_CERT_TYPE_PKCS_SIGNED_DATA
+            mitigations.authenticode_signed = true;
+        }
     }
 
     let section_headers_offset = opt_hdr_offset + size_of_opt_hdr;
@@ -217,6 +237,30 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         });
     }
 
+    // Verify SafeSEH and CFG from Load Config if available
+    if load_config_rva > 0 {
+        if let Some(lc_offset) = rva_to_offset(load_config_rva, &raw_sections) {
+            if is_64 {
+                // CFG check pointer is at offset 88 in 64-bit load config
+                if lc_offset + 96 <= data.len() {
+                    let guard_check = read_u64(data, lc_offset + 88).unwrap_or(0);
+                    if guard_check != 0 {
+                        mitigations.cfg = true;
+                    }
+                }
+            } else {
+                // 32-bit: SafeSEH handler table at offset 64, count at offset 68
+                if lc_offset + 72 <= data.len() {
+                    let se_table = read_u32(data, lc_offset + 64).unwrap_or(0);
+                    let se_count = read_u32(data, lc_offset + 68).unwrap_or(0);
+                    if se_table != 0 && se_count > 0 {
+                        mitigations.seh = true;
+                    }
+                }
+            }
+        }
+    }
+
     let mut imports = Vec::new();
     let mut imphash_items = Vec::new();
 
@@ -259,25 +303,26 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                                     (val & 0x8000_0000) != 0
                                 };
 
-                                let func_name = if is_ordinal {
+                                let (func_name, imphash_name) = if is_ordinal {
                                     let ord = (val & 0xFFFF) as u32;
-                                    format!("Ordinal#{}", ord)
+                                    (format!("Ordinal#{}", ord), format!("ord{}", ord))
                                 } else {
                                     let func_rva = (val & 0x7FFF_FFFF) as u32;
                                     if let Some(func_offset) = rva_to_offset(func_rva, &raw_sections) {
-                                        read_cstring(data, func_offset + 2).unwrap_or_else(|| "Unknown".to_string())
+                                        let name = read_cstring(data, func_offset + 2).unwrap_or_else(|| "Unknown".to_string());
+                                        (name.clone(), name.to_lowercase())
                                     } else {
-                                        "Unknown".to_string()
+                                        ("Unknown".to_string(), "unknown".to_string())
                                     }
                                 };
 
-                                let dll_stem = dll_name
-                                    .to_lowercase()
-                                    .trim_end_matches(".dll")
-                                    .trim_end_matches(".ocx")
-                                    .trim_end_matches(".sys")
-                                    .to_string();
-                                imphash_items.push(format!("{}.{}", dll_stem, func_name.to_lowercase()));
+                                let dll_lower = dll_name.to_lowercase();
+                                let dll_stem = dll_lower
+                                    .strip_suffix(".dll")
+                                    .or_else(|| dll_lower.strip_suffix(".sys"))
+                                    .or_else(|| dll_lower.strip_suffix(".ocx"))
+                                    .unwrap_or(&dll_lower);
+                                imphash_items.push(format!("{}.{}", dll_stem, imphash_name));
                                 funcs.push(func_name);
 
                                 thunk_offset += step;
@@ -309,24 +354,35 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     if export_dir_rva > 0 {
         if let Some(exp_offset) = rva_to_offset(export_dir_rva, &raw_sections) {
             if exp_offset + 40 <= data.len() {
+                let base = read_u32(data, exp_offset + 16).unwrap_or(0);
                 let num_names = read_u32(data, exp_offset + 24).unwrap_or(0) as usize;
+                let addr_funcs = read_u32(data, exp_offset + 28).unwrap_or(0);
                 let addr_names = read_u32(data, exp_offset + 32).unwrap_or(0);
                 let addr_ords = read_u32(data, exp_offset + 36).unwrap_or(0);
 
-                if let (Some(names_off), Some(ords_off)) = (
+                if let (Some(names_off), Some(ords_off), Some(funcs_off)) = (
                     rva_to_offset(addr_names, &raw_sections),
                     rva_to_offset(addr_ords, &raw_sections),
+                    rva_to_offset(addr_funcs, &raw_sections),
                 ) {
                     for i in 0..num_names.min(256) {
                         if names_off + (i * 4) + 4 <= data.len() && ords_off + (i * 2) + 2 <= data.len() {
                             let name_rva = read_u32(data, names_off + (i * 4)).unwrap_or(0);
-                            let ordinal = read_u16(data, ords_off + (i * 2)).unwrap_or(0) as u32;
+                            let ordinal_idx = read_u16(data, ords_off + (i * 2)).unwrap_or(0) as u32;
+                            let ordinal = base + ordinal_idx;
+
+                            let func_rva = if funcs_off + (ordinal_idx as usize * 4) + 4 <= data.len() {
+                                read_u32(data, funcs_off + (ordinal_idx as usize * 4)).unwrap_or(0)
+                            } else {
+                                0
+                            };
+
                             if let Some(no) = rva_to_offset(name_rva, &raw_sections) {
                                 if let Some(exp_name) = read_cstring(data, no) {
                                     exports.push(ExportInfo {
                                         name: exp_name,
                                         ordinal,
-                                        rva: 0,
+                                        rva: func_rva,
                                     });
                                 }
                             }

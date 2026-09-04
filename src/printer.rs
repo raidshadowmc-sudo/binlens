@@ -1,5 +1,5 @@
 ﻿use crate::entropy::{entropy_badge, render_entropy_bar, render_entropy_histogram};
-use crate::types::BinaryReport;
+use crate::types::{BinaryFormat, BinaryReport};
 use colored::*;
 
 pub fn print_banner() {
@@ -58,16 +58,7 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64]) {
 
     // 3. Security Mitigations Audit (Checksec)
     println!("\n{}", "─── [ SECURITY MITIGATIONS (CHECKSEC) ] ──────────────────────────────────────".bold());
-    println!("  ┌────────────────────────┬───────────┬─────────────────────────────────────┐");
-    println!("  │ Mitigation             │ Status    │ Details                             │");
-    println!("  ├────────────────────────┼───────────┼─────────────────────────────────────┤");
-    print_checksec_row("ASLR / PIE", report.mitigations.aslr, "Address Space Layout Randomization");
-    print_checksec_row("High Entropy VA (64-bit)", report.mitigations.high_entropy_va, "64-bit ASLR address pool expansion");
-    print_checksec_row("DEP / NX", report.mitigations.dep_nx, "Data Execution Prevention / No-Execute");
-    print_checksec_row("Control Flow Guard (CFG)", report.mitigations.cfg, "Indirect call target validation");
-    print_checksec_row("Authenticode Signature", report.mitigations.authenticode_signed, "Valid digital certificate table");
-    print_checksec_row("W^X (No RWX Sections)", !report.mitigations.has_rwx_sections, "Prevents writable and executable pages");
-    println!("  └────────────────────────┴───────────┴─────────────────────────────────────┘");
+    print_checksec_table(report);
 
     // 4. Section Table
     if !report.sections.is_empty() {
@@ -107,21 +98,38 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64]) {
     if !report.imports.is_empty() {
         println!("\n{}", "─── [ IMPORTS & DEPENDENCIES ] ───────────────────────────────────────────────".bold());
         let total_apis: usize = report.imports.iter().map(|i| i.functions.len()).sum();
-        println!("  Total: {} DLL(s), {} API function(s) imported", report.imports.len(), total_apis);
+        println!("  Total: {} Library/DLL(s), {} Symbol/API(s) resolved", report.imports.len(), total_apis);
         for imp in report.imports.iter().take(8) {
-            println!("  • {:<20} ({} APIs) : {}",
+            let sample_funcs = if !imp.functions.is_empty() {
+                format!(" : {}", imp.functions.iter().take(3).cloned().collect::<Vec<_>>().join(", ") +
+                    if imp.functions.len() > 3 { " ..." } else { "" })
+            } else {
+                String::new()
+            };
+            println!("  • {:<25} ({} symbols){}",
                 imp.dll.cyan().bold(),
                 imp.functions.len(),
-                imp.functions.iter().take(3).cloned().collect::<Vec<_>>().join(", ") +
-                if imp.functions.len() > 3 { " ..." } else { "" }
+                sample_funcs
             );
         }
         if report.imports.len() > 8 {
-            println!("  ... and {} more DLLs (use --all to dump full import table)", report.imports.len() - 8);
+            println!("  ... and {} more dependencies (use --all to dump full import table)", report.imports.len() - 8);
         }
     }
 
-    // 6. Interesting Indicators & Strings
+    // 6. Exports summary
+    if !report.exports.is_empty() {
+        println!("\n{}", "─── [ EXPORTED SYMBOLS ] ─────────────────────────────────────────────────────".bold());
+        println!("  Total: {} exported function(s)/symbol(s)", report.exports.len());
+        for exp in report.exports.iter().take(8) {
+            println!("  • [Ord {:>3}] 0x{:<8X} : {}", exp.ordinal, exp.rva, exp.name.green().bold());
+        }
+        if report.exports.len() > 8 {
+            println!("  ... and {} more exported symbols", report.exports.len() - 8);
+        }
+    }
+
+    // 7. Interesting Indicators & Strings
     if !report.interesting_strings.is_empty() {
         println!("\n{}", "─── [ DETECTED SUSPICIOUS INDICATORS & PATTERNS ] ───────────────────────────".bold());
         for item in report.interesting_strings.iter().take(15) {
@@ -152,16 +160,25 @@ fn print_checksec_row(name: &str, passed: bool, desc: &str) {
     println!("  │ {:<22} │ {} │ {:<35} │", name, status_str, desc);
 }
 
-pub fn print_checksec_only(report: &BinaryReport) {
-    println!("\n{}", format!("Checksec Audit for: {}", report.file_name).bold());
-    println!("┌────────────────────────┬───────────┬─────────────────────────────────────┐");
-    println!("│ Mitigation             │ Status    │ Details                             │");
-    println!("├────────────────────────┼───────────┼─────────────────────────────────────┤");
+fn print_checksec_table(report: &BinaryReport) {
+    println!("  ┌────────────────────────┬───────────┬─────────────────────────────────────┐");
+    println!("  │ Mitigation             │ Status    │ Details                             │");
+    println!("  ├────────────────────────┼───────────┼─────────────────────────────────────┤");
     print_checksec_row("ASLR / PIE", report.mitigations.aslr, "Address Space Layout Randomization");
-    print_checksec_row("High Entropy VA", report.mitigations.high_entropy_va, "64-bit ASLR address space");
+    if report.format == BinaryFormat::PE64 {
+        print_checksec_row("High Entropy VA", report.mitigations.high_entropy_va, "64-bit ASLR address pool expansion");
+    }
     print_checksec_row("DEP / NX", report.mitigations.dep_nx, "Data Execution Prevention / No-Execute");
+    if report.format == BinaryFormat::PE32 {
+        print_checksec_row("SafeSEH", report.mitigations.seh, "Structured Exception Handler table");
+    }
     print_checksec_row("Control Flow Guard (CFG)", report.mitigations.cfg, "Indirect call target validation");
     print_checksec_row("Authenticode Signature", report.mitigations.authenticode_signed, "Valid digital certificate table");
-    print_checksec_row("W^X (No RWX Sections)", !report.mitigations.has_rwx_sections, "Prevents writable & executable pages");
-    println!("└────────────────────────┴───────────┴─────────────────────────────────────┘");
+    print_checksec_row("W^X (No RWX Sections)", !report.mitigations.has_rwx_sections, "Prevents writable and executable pages");
+    println!("  └────────────────────────┴───────────┴─────────────────────────────────────┘");
+}
+
+pub fn print_checksec_only(report: &BinaryReport) {
+    println!("\n{}", format!("Checksec Audit for: {}", report.file_name).bold());
+    print_checksec_table(report);
 }

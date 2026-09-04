@@ -4,12 +4,15 @@ use colored::*;
 pub fn compare_binaries(a: &BinaryReport, b: &BinaryReport) -> Vec<String> {
     let mut out = Vec::new();
 
+    let name_a = format!("[A] {}", a.file_name);
+    let name_b = format!("[B] {}", b.file_name);
+
     out.push("================================================================================".normal().to_string());
-    out.push(format!("  BINARY DIFFERENTIAL ANALYSIS: {} vs {}", a.file_name.bold(), b.file_name.bold()));
+    out.push(format!("  BINARY DIFFERENTIAL ANALYSIS: {} vs {}", name_a.bold(), name_b.bold()));
     out.push("================================================================================".normal().to_string());
 
     // Basic Metrics Diff
-    out.push(format!("  {:20} | {:<25} | {:<25}", "METRIC", &a.file_name, &b.file_name).bold().to_string());
+    out.push(format!("  {:20} | {:<25} | {:<25}", "METRIC", &name_a, &name_b).bold().to_string());
     out.push("  ---------------------+---------------------------+---------------------------".normal().to_string());
     
     let size_diff = b.file_size as i64 - a.file_size as i64;

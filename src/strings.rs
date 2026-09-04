@@ -3,12 +3,12 @@
 pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
     let mut results = Vec::new();
 
-    // 1. Scan ASCII
+    // 1. Scan ASCII strings delimited by null or control chars (< 0x20 except tab/newline)
     let mut current_ascii = Vec::new();
     let mut start_idx = 0;
 
     for (i, &b) in data.iter().enumerate() {
-        if (0x20..=0x7E).contains(&b) || b == b'\t' {
+        if (0x20..=0x7E).contains(&b) {
             if current_ascii.is_empty() {
                 start_idx = i;
             }
@@ -16,16 +16,18 @@ pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
         } else {
             if current_ascii.len() >= min_len {
                 if let Ok(s) = String::from_utf8(current_ascii.clone()) {
-                    if let Some(cat) = classify_string(&s) {
-                        results.push(CategorizedString {
-                            category: cat.to_string(),
-                            value: s,
-                            offset: start_idx,
-                        });
-                    }
+                    // Avoid runaway strings by splitting on spaces or checking tokens
+                    process_and_classify(&s, start_idx, &mut results);
                 }
             }
             current_ascii.clear();
+        }
+    }
+
+    // Process remainder
+    if current_ascii.len() >= min_len {
+        if let Ok(s) = String::from_utf8(current_ascii) {
+            process_and_classify(&s, start_idx, &mut results);
         }
     }
 
@@ -36,7 +38,7 @@ pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
     while i + 1 < data.len() {
         let b1 = data[i];
         let b2 = data[i + 1];
-        if b2 == 0 && ((0x20..=0x7E).contains(&b1) || b1 == b'\t') {
+        if b2 == 0 && (0x20..=0x7E).contains(&b1) {
             if current_utf16.is_empty() {
                 u16_start = i;
             }
@@ -45,20 +47,24 @@ pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
         } else {
             if current_utf16.len() >= min_len {
                 let s: String = current_utf16.iter().collect();
-                if let Some(cat) = classify_string(&s) {
-                    results.push(CategorizedString {
-                        category: cat.to_string(),
-                        value: s,
-                        offset: u16_start,
-                    });
-                }
+                process_and_classify(&s, u16_start, &mut results);
             }
             current_utf16.clear();
-            i += 1;
+            i += 2;
         }
     }
 
     results
+}
+
+fn process_and_classify(s: &str, offset: usize, results: &mut Vec<CategorizedString>) {
+    if let Some(cat) = classify_string(s) {
+        results.push(CategorizedString {
+            category: cat.to_string(),
+            value: s.to_string(),
+            offset,
+        });
+    }
 }
 
 fn classify_string(s: &str) -> Option<&'static str> {
@@ -106,9 +112,12 @@ fn classify_string(s: &str) -> Option<&'static str> {
         "regsvr32",
     ];
 
-    for api in &suspicious_apis {
-        if lower.contains(api) {
-            return Some("Suspicious API/Command");
+    // Only tag as suspicious API if string length is bounded (not a giant merged concatenation)
+    if s.len() <= 64 {
+        for api in &suspicious_apis {
+            if lower == *api || lower == format!("{}.exe", api) || lower.starts_with(&format!("{}(", api)) {
+                return Some("Suspicious API/Command");
+            }
         }
     }
 

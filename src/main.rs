@@ -1,11 +1,4 @@
-﻿mod diff;
-mod elf;
-mod entropy;
-mod pe;
-mod printer;
-mod strings;
-mod types;
-
+﻿use binlens::{diff, elf, entropy, pe, printer, strings, types};
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::fs;
@@ -85,27 +78,50 @@ enum Commands {
     },
 }
 
-fn analyze_binary(path_str: &str, min_string_len: usize) -> Result<types::BinaryReport, String> {
+fn map_or_read_file(path_str: &str) -> Result<(fs::File, Option<memmap2::Mmap>, Vec<u8>), String> {
     let path = Path::new(path_str);
     if !path.exists() {
         return Err(format!("File '{}' not found.", path_str));
     }
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open file '{}': {}", path_str, e))?;
+    let metadata = file.metadata().map_err(|e| format!("Failed to get file metadata: {}", e))?;
+    
+    if metadata.len() == 0 {
+        return Ok((file, None, Vec::new()));
+    }
 
-    let data = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    // Zero-copy memory mapping
+    match unsafe { memmap2::Mmap::map(&file) } {
+        Ok(mmap) => Ok((file, Some(mmap), Vec::new())),
+        Err(_) => {
+            // Fallback to heap read if memory mapping is unsupported (e.g. some virtual filesystems)
+            let data = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
+            Ok((file, None, data))
+        }
+    }
+}
 
-    let mut report = if let Some(pe_report) = pe::parse_pe(&data, &file_name) {
+fn get_data_slice<'a>(mmap: &'a Option<memmap2::Mmap>, fallback: &'a [u8]) -> &'a [u8] {
+    if let Some(m) = mmap {
+        &m[..]
+    } else {
+        fallback
+    }
+}
+
+fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> types::BinaryReport {
+    let mut report = if let Some(pe_report) = pe::parse_pe(data, file_name) {
         pe_report
-    } else if let Some(elf_report) = elf::parse_elf(&data, &file_name) {
+    } else if let Some(elf_report) = elf::parse_elf(data, file_name) {
         elf_report
     } else {
-        let overall_entropy = entropy::calculate_entropy(&data);
+        let overall_entropy = entropy::calculate_entropy(data);
         use md5::Md5;
         use sha2::{Digest, Sha256};
         let mut sha_hasher = Sha256::new();
-        sha_hasher.update(&data);
+        sha_hasher.update(data);
         let mut md5_hasher = Md5::new();
-        md5_hasher.update(&data);
+        md5_hasher.update(data);
 
         types::BinaryReport {
             file_name: file_name.to_string(),
@@ -127,8 +143,8 @@ fn analyze_binary(path_str: &str, min_string_len: usize) -> Result<types::Binary
         }
     };
 
-    report.interesting_strings = strings::extract_strings(&data, min_string_len);
-    Ok(report)
+    report.interesting_strings = strings::extract_strings(data, min_string_len);
+    report
 }
 
 fn main() {
@@ -136,33 +152,35 @@ fn main() {
 
     match cli.command {
         Commands::Scan { file, block_size, min_string } => {
-            match analyze_binary(&file, min_string) {
-                Ok(report) => {
-                    if cli.json {
-                        println!("{}", serde_json::to_string_pretty(&report).unwrap());
-                    } else {
-                        let data = fs::read(&file).unwrap_or_default();
-                        let blocks = entropy::calculate_block_entropy(&data, block_size);
-                        printer::print_report(&report, &blocks);
-                    }
-                }
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
                 Err(e) => {
                     eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
+            };
+            let data = get_data_slice(&mmap, &fallback);
+            let report = analyze_binary_data(data, &file, min_string);
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                let blocks = entropy::calculate_block_entropy(data, block_size);
+                printer::print_report(&report, &blocks);
             }
         }
 
         Commands::Entropy { file, block_size, width } => {
-            let data = match fs::read(&file) {
-                Ok(d) => d,
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
                 Err(e) => {
-                    eprintln!("{} Failed to read '{}': {}", "Error:".red().bold(), file, e);
+                    eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             };
-            let overall = entropy::calculate_entropy(&data);
-            let blocks = entropy::calculate_block_entropy(&data, block_size);
+            let data = get_data_slice(&mmap, &fallback);
+            let overall = entropy::calculate_entropy(data);
+            let blocks = entropy::calculate_block_entropy(data, block_size);
 
             if cli.json {
                 let json_data = serde_json::json!({
@@ -193,37 +211,44 @@ fn main() {
         }
 
         Commands::Checksec { file } => {
-            match analyze_binary(&file, 4) {
-                Ok(report) => {
-                    if cli.json {
-                        println!("{}", serde_json::to_string_pretty(&report.mitigations).unwrap());
-                    } else {
-                        printer::print_banner();
-                        printer::print_checksec_only(&report);
-                    }
-                }
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
                 Err(e) => {
                     eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
+            };
+            let data = get_data_slice(&mmap, &fallback);
+            let report = analyze_binary_data(data, &file, 4);
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&report.mitigations).unwrap());
+            } else {
+                printer::print_banner();
+                printer::print_checksec_only(&report);
             }
         }
 
         Commands::Diff { file_a, file_b } => {
-            let report_a = match analyze_binary(&file_a, 4) {
-                Ok(r) => r,
+            let (_fa, mmap_a, fallback_a) = match map_or_read_file(&file_a) {
+                Ok(res) => res,
                 Err(e) => {
                     eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             };
-            let report_b = match analyze_binary(&file_b, 4) {
-                Ok(r) => r,
+            let data_a = get_data_slice(&mmap_a, &fallback_a);
+            let report_a = analyze_binary_data(data_a, &file_a, 4);
+
+            let (_fb, mmap_b, fallback_b) = match map_or_read_file(&file_b) {
+                Ok(res) => res,
                 Err(e) => {
                     eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             };
+            let data_b = get_data_slice(&mmap_b, &fallback_b);
+            let report_b = analyze_binary_data(data_b, &file_b, 4);
 
             if cli.json {
                 let diff_json = serde_json::json!({
@@ -240,15 +265,15 @@ fn main() {
         }
 
         Commands::Strings { file, min_len, all } => {
-            let data = match fs::read(&file) {
-                Ok(d) => d,
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
                 Err(e) => {
-                    eprintln!("{} Failed to read '{}': {}", "Error:".red().bold(), file, e);
+                    eprintln!("{} {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             };
-
-            let categorized = strings::extract_strings(&data, min_len);
+            let data = get_data_slice(&mmap, &fallback);
+            let categorized = strings::extract_strings(data, min_len);
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&categorized).unwrap());
@@ -257,7 +282,7 @@ fn main() {
                 println!("  Extracted Indicators from: {} (min length: {})\n", file.bold(), min_len);
                 if all {
                     let mut current = Vec::new();
-                    for &b in &data {
+                    for &b in data {
                         if (0x20..=0x7E).contains(&b) {
                             current.push(b);
                         } else {
