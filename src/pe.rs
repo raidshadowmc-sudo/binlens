@@ -219,6 +219,16 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
 
     let dans_off = dans_offset?;
 
+    // Safety / DoS Guard: Microsoft Rich headers are virtually always under 1-2 KiB (typically 10-40 records).
+    // An adversary could craft an inflated DOS stub (e.g. e_lfanew at 16 MiB) with DanS at 0x80
+    // and Rich at 16 MiB to trigger massive heap allocations.
+    // Impose a strict maximum length (4 KiB) and record cap (256 entries).
+    if rich_offset <= dans_off + 16 || rich_offset - dans_off > 4096 {
+        return None;
+    }
+
+    const MAX_RICH_RECORDS: usize = 256;
+
     // The header format:
     // [dans_off]: "DanS" ^ xor_key
     // [dans_off + 4]: 0 ^ xor_key (xor_key itself)
@@ -227,7 +237,7 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
     // Followed by pairs of (comp_id ^ xor_key, count ^ xor_key) up to rich_offset
     let mut entries = Vec::new();
     let mut entry_off = dans_off + 16;
-    while entry_off + 8 <= rich_offset {
+    while entry_off + 8 <= rich_offset && entries.len() < MAX_RICH_RECORDS {
         let enc_comp_id = read_u32(data, entry_off)?;
         let enc_count = read_u32(data, entry_off + 4)?;
 

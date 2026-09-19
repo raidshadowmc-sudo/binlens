@@ -553,3 +553,31 @@ fn test_pe_rich_header_parsing() {
     assert_eq!(rich.entries[0].tool_name, "Utc1930_C");
     assert_eq!(rich.entries[0].msvc_version.as_deref(), Some("Visual Studio 2022 (17.0)"));
 }
+
+#[test]
+fn test_pe_rich_header_oversized_dos_protection() {
+    // A crafted PE with e_lfanew far away and a >4KB gap between DanS and Rich
+    let mut pe = vec![0u8; 8192];
+    pe[0..2].copy_from_slice(b"MZ");
+    let e_lfanew = 7000;
+    pe[0x3C..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
+    pe[e_lfanew..e_lfanew+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = e_lfanew + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes());
+
+    let xor_key: u32 = 0x12345678;
+    let dans_magic: u32 = 0x536E6144;
+    let dans_off = 0x80;
+    pe[dans_off..dans_off+4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
+
+    // Place Rich 5000 bytes later (> 4096 bytes threshold)
+    let rich_off = dans_off + 5000;
+    pe[rich_off..rich_off+4].copy_from_slice(b"Rich");
+    pe[rich_off+4..rich_off+8].copy_from_slice(&xor_key.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_huge_rich.exe").expect("Parse failed");
+    assert!(report.rich_header.is_none(), "Oversized (>4KB) Rich Header must be rejected to prevent memory exhaustion");
+}
