@@ -1,213 +1,153 @@
-<p align="center">
-  <h1 align="center">🔍 binlens</h1>
-  <p align="center">
-    <strong>Blazingly fast binary inspector, Shannon entropy heatmapper & security mitigations auditor for hackers and reverse engineers.</strong>
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/language-Rust%202024-orange.svg" alt="Rust">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-    <img src="https://img.shields.io/badge/version-0.1.0--alpha-blueviolet.svg" alt="Version">
-    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platform">
-  </p>
-</p>
+# binlens
+
+A memory-mapped binary inspection, Shannon entropy analysis, and security mitigation auditor for Windows Portable Executable (PE) and Linux Executable and Linkable Format (ELF) binaries.
 
 ---
 
-## ⚡ Overview
+## Overview
 
-**`binlens`** is a modern, single-binary CLI utility built in pure Rust designed for reverse engineers, malware analysts, and systems programmers. It allows you to rapidly inspect PE (Windows) and ELF (Linux) binaries directly from your terminal, without needing heavy external tools or disassemblers.
+`binlens` is a command-line utility implemented in pure Rust designed for security auditing, binary triage, and software supply-chain verification. It performs static analysis on executable headers, computes continuous block-level entropy distributions, evaluates operating system exploit mitigations, extracts API import/export tables, and computes standard import hashes without requiring runtime execution or external disassembler dependencies.
 
-### ✨ Key Features
-
-- **🌈 Shannon Entropy Heatmap**: Computes entropy across configurable file chunks (default: 512 bytes) and renders an intuitive ASCII gradient bar (`░` zero padding, `▒` text, `█` code, `█` compressed, `█` packed/encrypted) alongside a distribution histogram.
-- **🛡️ Security Mitigations Audit (`checksec`)**: Instant audit of binary hardening flags:
-  - **ASLR** / High-Entropy 64-bit VA
-  - **DEP / NX** (Data Execution Prevention)
-  - **CFG** (Control Flow Guard)
-  - **SafeSEH** / Exception handling
-  - **Authenticode Signature** presence
-  - **W^X Enforcement**: Automatic detection of hazardous `RWX` (Readable + Writable + Executable) sections.
-- **📊 Deep PE & ELF Parsing**:
-  - Full section headers breakdown (Virtual / Raw sizes, Characteristics, Section Entropy).
-  - Import Directory Table resolution & **Imphash** (MD5 of normalized imported APIs) computation.
-  - Exported symbols extraction.
-- **🔎 Smart Indicator & Strings Extraction**: Identifies and tags interesting strings by pattern:
-  - URLs (`http://`, `https://`, `ftp://`)
-  - IPv4 addresses
-  - Registry keys (`HKEY_`, `SOFTWARE\...`)
-  - File paths (Windows drive letters, Unix system dirs)
-  - High-interest / suspicious APIs (`VirtualAlloc`, `CreateRemoteThread`, `cmd.exe`, `powershell`)
-- **⚖️ Side-by-Side Binary Diffing**: Compare two builds or variants with `binlens diff file_a file_b`:
-  - Size and entropy shifts
-  - Added / removed sections
-  - Added / removed imported DLLs and functions
-  - Hardening flags delta (e.g. detect dropped ASLR)
-- **🤖 CI/CD Ready**: Every command supports `--json` for seamless integration into automated security gates and pipelines.
+All file parsing is backed by memory-mapped I/O (`memmap2`) and strict offset validation, ensuring zero-copy performance and minimal memory footprint on multi-gigabyte binaries.
 
 ---
 
-## 🚀 Terminal Showcase
+## Capabilities
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ FILE: binlens.exe                                                            │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Format:        PE32+ (64-bit Windows)                                        │
-│ Architecture:  x86_64 / AMD64 (64-bit)                                       │
-│ Subsystem:     Windows CUI (Console)                                         │
-│ File Size:     1080320 bytes (1055.00 KB)                                    │
-│ Entry Point:   0x15AC0                                                       │
-│ MD5:           9f8879ae7d99847b987eadf408fdfb93                              │
-│ SHA256:        21c1b5c08d7875130d5f86335142d731615d39b19c1b9ce733992e2ac9e9a1df │
-└──────────────────────────────────────────────────────────────────────────────┘
+### 1. Security Mitigation Verification (`checksec`)
+Evaluates compilation and linker hardening mechanisms across executable formats:
 
-─── [ ENTROPY ANALYSIS & PACKING HEURISTICS ] ────────────────────────────────
-  Overall Shannon Entropy: 6.215 / 8.000  [NORMAL CODE / DATA]
+* **Address Space Layout Randomization (ASLR / PIE)**:
+  * PE: Evaluates `IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE` and 64-bit High-Entropy Virtual Address space (`IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA`).
+  * ELF: Evaluates `ET_DYN` object type and dynamic flags (`DF_1_PIE`).
+* **Data Execution Prevention (DEP / NX)**:
+  * PE: Verifies `IMAGE_DLLCHARACTERISTICS_NX_COMPAT`.
+  * ELF: Verifies `PT_GNU_STACK` segment permissions (defaults to non-executable stack if segment is absent).
+* **Control Flow Guard (CFG)**:
+  * PE: Cross-references `IMAGE_DLLCHARACTERISTICS_GUARD_CF` with `IMAGE_LOAD_CONFIG_DIRECTORY`. Verifies valid registration of `GuardCFCheckFunctionPointer` (offset 112 for PE32+, offset 72 for PE32) to prevent flag-only false positives.
+* **Structured Exception Handling (SafeSEH / SEH)**:
+  * PE32: Validates registered exception handlers in Load Configuration (`SEHandlerTable` and `SEHandlerCount`).
+  * PE32+: Validates `.pdata` table-based exception handling unless explicitly disabled by `IMAGE_DLLCHARACTERISTICS_NO_SEH`.
+* **W^X Enforcement (No RWX Sections)**:
+  * Scans section headers for concurrently writable and executable characteristics (`IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE` on PE; `SHF_WRITE | SHF_EXECINSTR` on ELF).
+* **Authenticode Signature Presence**:
+  * Inspects PE Security Data Directory for `WIN_CERTIFICATE` / PKCS#7 signed data structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`).
 
-  Block Entropy Heatmap (Distribution across file offset):
-  [████████████████████████████████████████████████▒▒█▒▒▒▒▒▒███▒▒██]
-    0% ───────────────────────── 50% ──────────────────────── 100%  
-  Legend: ░ Zeroes  ▒ Text/Sparse  █ Code  █ Dense  █ Packed/Encrypted
+### 2. Shannon Entropy Heatmap & Packing Detection
+* Computes chunked Shannon entropy across configurable intervals (default: 512 bytes).
+* Renders an in-terminal distribution bar alongside an 8-bucket frequency histogram, identifying regions of null padding, structured code, text data, and high-entropy packed or encrypted payloads.
 
-─── [ SECURITY MITIGATIONS (CHECKSEC) ] ──────────────────────────────────────
-  ┌────────────────────────┬───────────┬─────────────────────────────────────┐
-  │ Mitigation             │ Status    │ Details                             │
-  ├────────────────────────┼───────────┼─────────────────────────────────────┤
-  │ ASLR / PIE             │   PASS    │ Address Space Layout Randomization  │
-  │ High Entropy VA        │   PASS    │ 64-bit ASLR address pool expansion  │
-  │ DEP / NX               │   PASS    │ Data Execution Prevention / No-Exec │
-  │ Control Flow Guard     │   FAIL    │ Indirect call target validation     │
-  │ Authenticode Signature │   FAIL    │ Valid digital certificate table     │
-  │ W^X (No RWX Sections)  │   PASS    │ Prevents writable & executable pages│
-  └────────────────────────┴───────────┴─────────────────────────────────────┘
-```
+### 3. Header, Import, and Export Inspection
+* Resolves section headers with virtual addresses, raw offsets, sizes, permissions, and section-specific entropy metrics.
+* Resolves Import Address Tables (IAT) across PE and ELF dynamic symbol tables.
+* Computes normalized Import Hash (**Imphash**) compliant with the Mandiant standard, including ordinal import notation (`.ord<number>`).
+* Extracts and indexes exported symbols with ordinal numbers and relative virtual addresses (RVA).
+
+### 4. Binary Differential Analysis (`diff`)
+Compares two executable binaries side-by-side:
+* Tracks file size and overall entropy variance.
+* Detects section additions, deletions, and layout modifications.
+* Highlights differences in imported dependencies and symbols.
+* Reports drift in mitigation configurations (e.g., regressions where ASLR or DEP was dropped in a release build).
+
+### 5. Automated Pipelines (`--json`)
+All commands support standardized JSON output for integration into CI/CD security gates, vulnerability scanners, and automated triage workflows.
 
 ---
 
-## 📦 Installation
+## Current Status and Scope (v0.1.0-alpha)
 
-### From Source
+This project is in active development (`v0.1.0-alpha`). The current implementation provides verified, tested parsing and auditing capabilities with the following scope boundaries:
 
-Ensure you have a recent Rust toolchain installed (1.80+):
+* **Supported Formats**:
+  * Windows PE: `PE32` (x86) and `PE32+` (x64).
+  * Linux ELF: `ELF32` and `ELF64`, Little-Endian and Big-Endian architectures.
+* **Mitigation Scope**:
+  * Authenticode: Verifies existence and header validity of the PKCS#7 certificate table in the Security Directory. Full cryptographic validation of the file digest and root certificate chain traversal is scheduled for v0.2.0.
+  * Exception Handling: SafeSEH validates Load Config table presence and handler counts.
+* **Strings Extraction**:
+  * Utilizes byte scanning with pattern-based heuristics (IPv4, URLs, Windows registry keys, common filesystem paths, and sensitive system APIs).
 
+---
+
+## Installation
+
+### Prerequisites
+* Rust toolchain (version 1.80 or later)
+* Cargo package manager
+
+### Build from Source
 ```bash
-git clone https://github.com/your-username/binlens.git
+git clone https://github.com/raidshadowmc-sudo/binlens.git
 cd binlens
 cargo build --release
 ```
 
 The compiled binary will be located at:
-- `target/release/binlens` (Linux / macOS)
-- `target/release/binlens.exe` (Windows)
+* Windows: `target/release/binlens.exe`
+* Linux: `target/release/binlens`
 
-To install globally to your `~/.cargo/bin`:
-
+To install system-wide via Cargo:
 ```bash
 cargo install --path .
 ```
 
 ---
 
-## 🛠️ Usage
+## Usage Examples
 
-### 1. Full Scan
-
-Analyze file headers, sections, entropy, mitigations, imports, and strings:
-
+### Full Binary Inspection
 ```bash
-binlens scan target_app.exe
+binlens scan target_binary.exe
 ```
 
-Tune block size for entropy or string scanning threshold:
-
+### Security Mitigations Audit
 ```bash
-binlens scan target_app.exe --block-size 256 --min-string 6
+binlens checksec target_binary
 ```
 
-### 2. Shannon Entropy Heatmap
-
-Visualize packed/encrypted areas across the binary file layout:
-
+### Shannon Entropy Analysis
 ```bash
-binlens entropy target_app.exe --width 80
+binlens entropy target_binary --width 80 --block-size 512
 ```
 
-### 3. Security Mitigations Audit (`checksec`)
-
-Quickly check if a binary has ASLR, DEP, CFG, or dangerous RWX sections:
-
+### Differential Analysis Between Builds
 ```bash
-binlens checksec target_app.exe
+binlens diff release_v1.exe release_v2.exe
 ```
 
-### 4. Binary Differential Analysis (`diff`)
-
-Compare two versions of an application or binary payload:
-
+### String Extraction with Pattern Classification
 ```bash
-binlens diff build_v1.exe build_v2.exe
+binlens strings target_binary --min-len 6
 ```
 
-### 5. Suspicious String Extraction
-
-Scan for URLs, IPv4 addresses, file paths, and known sensitive APIs:
-
+### Machine-Readable Output for Automated Tooling
 ```bash
-binlens strings target_app.exe --min-len 6
-```
-
-Dump all printable strings:
-
-```bash
-binlens strings target_app.exe --all
-```
-
-### 6. Machine-Readable Output (JSON)
-
-Use `--json` on any command for scripting or CI/CD pipelines:
-
-```bash
-binlens --json checksec app.exe | jq .aslr
+binlens --json checksec target_binary.exe
 ```
 
 ---
 
-## 🏗️ Architecture & Philosophy
+## Architecture and Quality Assurance
 
-- **Pure, memory-safe Rust**: Minimal external dependencies, zero unsafe blocks in header decoding.
-- **Memory-mapped I/O (`memmap2`)**: Low memory footprint; parses gigabyte-scale binaries without loading entire files into heap RAM.
-- **Rigorously Tested**: Verified with unit tests, 14 targeted regression tests, and differential testing against Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`).
-
----
-
-## 📌 Project Status & Current Scope (v0.1.0-alpha)
-
-This tool is currently in **early active development (`v0.1.0-alpha`)**. Here is the transparent breakdown of what is supported today and known scope boundaries:
-
-- **Supported Formats**: 
-  - Windows Portable Executable: `PE32` (x86) and `PE32+` (x64).
-  - Linux Executable and Linkable Format: `ELF32` and `ELF64` (Little-Endian and Big-Endian).
-- **Security Mitigations**:
-  - `ASLR / PIE`: Verified via PE `IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE` and ELF `ET_DYN` / `DF_1_PIE`.
-  - `DEP / NX`: Verified via PE `IMAGE_DLLCHARACTERISTICS_NX_COMPAT` and ELF `PT_GNU_STACK` flags (defaults to NX enabled if GNU stack header is omitted).
-  - `CFG (Control Flow Guard)`: Verified via PE `IMAGE_DLLCHARACTERISTICS_GUARD_CF` alongside `IMAGE_LOAD_CONFIG_DIRECTORY` function pointer checks (`GuardCFCheckFunctionPointer` at offset 112 on x64, offset 72 on x86).
-  - `SafeSEH`: On x86, verifies Load Config table presence and handler counts (`SEHandlerTable` / `SEHandlerCount`). On x64, verifies table-based `.pdata` exception handling unless `IMAGE_DLLCHARACTERISTICS_NO_SEH` is flagged.
-  - `Authenticode`: Currently verifies the existence and header format of the `WIN_CERTIFICATE` / PKCS#7 table in the Security Directory (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`). *Cryptographic hash validation of the file digest and root certificate chain traversal are planned for v0.2.0.*
-- **Strings Extraction**: Fast byte scanning for printable ASCII/UTF-8 strings with heuristic pattern classification (IPs, URLs, registry keys, filesystem paths, sensitive process APIs).
+* **Memory-Mapped Processing**: Built on `memmap2` to avoid loading complete file contents into heap memory.
+* **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
+* **Bounds Verification**: Strict bounds checking on all RVA and section offset calculations to guard against malformed headers and parser exploitation.
+* **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, section parsing, and Load Config verification.
+* **Automated Test Suite**: Includes 14 targeted regression tests covering edge cases in RVA resolution, ordinal formatting, Big-Endian ELF structures, and Load Config layout variations.
 
 ---
 
-## 🗺️ Roadmap & Planned Work
+## Roadmap
 
-- [ ] **Mach-O Support**: Parsing 64-bit Mach-O headers, universal binaries (fat binaries), and macOS code signature blobs.
-- [ ] **Cryptographic Authenticode Verification**: Full PKCS#7 / X.509 signature verification against Windows Root CA store and digest integrity checks.
-- [ ] **Rich Header Parser**: Decrypting and parsing the undocumented MSVC `@comp.id` compiler and build telemetry records.
-- [ ] **YARA Integration**: Ability to run external YARA rule files against target binaries alongside entropy & mitigation audits.
-- [ ] **Entry Point Disassembly Preview**: Lightweight disassembly (first 16-32 instructions) via `iced-x86` for rapid triage of packers or shellcode stubs.
-- [ ] **Prebuilt Release Binaries**: Automated multi-platform GitHub Actions release artifacts.
+* **Mach-O Format Support**: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
+* **Cryptographic Authenticode Validation**: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
+* **MSVC Rich Header Analysis**: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
+* **YARA Rule Integration**: Native rule compilation and matching against mapped binary memory.
+* **Entry Point Disassembly Preview**: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 
 ---
 
-## 📜 License
+## License
 
-Licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
