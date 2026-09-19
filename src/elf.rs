@@ -1,4 +1,4 @@
-﻿use crate::entropy::calculate_entropy;
+use crate::entropy::calculate_entropy;
 use crate::pe::hex_encode;
 use crate::types::{BinaryFormat, BinaryReport, ExportInfo, ImportInfo, SectionInfo, SecurityMitigations};
 use md5::Md5;
@@ -401,6 +401,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         sections,
         imports,
         exports,
+        rich_header: None,
         imphash: None,
         interesting_strings: Vec::new(),
     })

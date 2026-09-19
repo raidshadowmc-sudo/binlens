@@ -176,3 +176,50 @@ print(json.dumps(results))
     }
 }
 
+#[test]
+fn test_differential_rich_header_with_pefile() {
+    let target = r"C:\Windows\System32\cmd.exe";
+    if !std::path::Path::new(target).exists() {
+        return;
+    }
+
+    let py_script = r#"
+import pefile
+import json
+import sys
+
+pe = pefile.PE(sys.argv[1])
+result = {}
+if hasattr(pe, 'RICH_HEADER') and pe.RICH_HEADER:
+    result = {
+        "has_rich": True,
+        "checksum": pe.RICH_HEADER.checksum,
+        "num_values": len(pe.RICH_HEADER.values) // 2
+    }
+else:
+    result = {"has_rich": False}
+
+print(json.dumps(result))
+"#;
+
+    let output = Command::new("python")
+        .args(["-c", py_script, target])
+        .output()
+        .expect("Failed to execute python with pefile");
+
+    assert!(output.status.success());
+    let ground_truth: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+
+    let data = std::fs::read(target).expect("Failed to read binary");
+    let report = parse_pe(&data, "cmd.exe").expect("Failed to parse PE with binlens");
+
+    if ground_truth["has_rich"].as_bool().unwrap() {
+        let rich = report.rich_header.expect("binlens should detect Rich Header on cmd.exe");
+        let expected_key = ground_truth["checksum"].as_u64().unwrap() as u32;
+        let expected_count = ground_truth["num_values"].as_u64().unwrap() as usize;
+
+        assert_eq!(rich.xor_key, expected_key, "Rich XOR key mismatch with pefile");
+        assert_eq!(rich.entries.len(), expected_count, "Rich entry count mismatch with pefile");
+    }
+}
+

@@ -1,4 +1,4 @@
-﻿use binlens::{diff, elf, entropy, pe, printer, strings, types};
+use binlens::{diff, elf, entropy, pe, printer, strings, types};
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::fs;
@@ -138,6 +138,7 @@ fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> t
             sections: Vec::new(),
             imports: Vec::new(),
             exports: Vec::new(),
+            rich_header: None,
             imphash: None,
             interesting_strings: Vec::new(),
         }
