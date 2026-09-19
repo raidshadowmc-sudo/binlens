@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <h1 align="center">🔍 binlens</h1>
   <p align="center">
     <strong>Blazingly fast binary inspector, Shannon entropy heatmapper & security mitigations auditor for hackers and reverse engineers.</strong>
@@ -6,8 +6,8 @@
   <p align="center">
     <img src="https://img.shields.io/badge/language-Rust%202024-orange.svg" alt="Rust">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-    <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build">
-    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform">
+    <img src="https://img.shields.io/badge/version-0.1.0--alpha-blueviolet.svg" alt="Version">
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platform">
   </p>
 </p>
 
@@ -172,11 +172,39 @@ binlens --json checksec app.exe | jq .aslr
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Architecture & Philosophy
 
-- Pure, memory-safe Rust with zero unsafe blocks in header parsing.
-- Zero heavyweight C library dependencies.
-- Streaming zero-copy slicing for minimal memory overhead even on large binaries.
+- **Pure, memory-safe Rust**: Minimal external dependencies, zero unsafe blocks in header decoding.
+- **Memory-mapped I/O (`memmap2`)**: Low memory footprint; parses gigabyte-scale binaries without loading entire files into heap RAM.
+- **Rigorously Tested**: Verified with unit tests, 14 targeted regression tests, and differential testing against Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`).
+
+---
+
+## 📌 Project Status & Current Scope (v0.1.0-alpha)
+
+This tool is currently in **early active development (`v0.1.0-alpha`)**. Here is the transparent breakdown of what is supported today and known scope boundaries:
+
+- **Supported Formats**: 
+  - Windows Portable Executable: `PE32` (x86) and `PE32+` (x64).
+  - Linux Executable and Linkable Format: `ELF32` and `ELF64` (Little-Endian and Big-Endian).
+- **Security Mitigations**:
+  - `ASLR / PIE`: Verified via PE `IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE` and ELF `ET_DYN` / `DF_1_PIE`.
+  - `DEP / NX`: Verified via PE `IMAGE_DLLCHARACTERISTICS_NX_COMPAT` and ELF `PT_GNU_STACK` flags (defaults to NX enabled if GNU stack header is omitted).
+  - `CFG (Control Flow Guard)`: Verified via PE `IMAGE_DLLCHARACTERISTICS_GUARD_CF` alongside `IMAGE_LOAD_CONFIG_DIRECTORY` function pointer checks (`GuardCFCheckFunctionPointer` at offset 112 on x64, offset 72 on x86).
+  - `SafeSEH`: On x86, verifies Load Config table presence and handler counts (`SEHandlerTable` / `SEHandlerCount`). On x64, verifies table-based `.pdata` exception handling unless `IMAGE_DLLCHARACTERISTICS_NO_SEH` is flagged.
+  - `Authenticode`: Currently verifies the existence and header format of the `WIN_CERTIFICATE` / PKCS#7 table in the Security Directory (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`). *Cryptographic hash validation of the file digest and root certificate chain traversal are planned for v0.2.0.*
+- **Strings Extraction**: Fast byte scanning for printable ASCII/UTF-8 strings with heuristic pattern classification (IPs, URLs, registry keys, filesystem paths, sensitive process APIs).
+
+---
+
+## 🗺️ Roadmap & Planned Work
+
+- [ ] **Mach-O Support**: Parsing 64-bit Mach-O headers, universal binaries (fat binaries), and macOS code signature blobs.
+- [ ] **Cryptographic Authenticode Verification**: Full PKCS#7 / X.509 signature verification against Windows Root CA store and digest integrity checks.
+- [ ] **Rich Header Parser**: Decrypting and parsing the undocumented MSVC `@comp.id` compiler and build telemetry records.
+- [ ] **YARA Integration**: Ability to run external YARA rule files against target binaries alongside entropy & mitigation audits.
+- [ ] **Entry Point Disassembly Preview**: Lightweight disassembly (first 16-32 instructions) via `iced-x86` for rapid triage of packers or shellcode stubs.
+- [ ] **Prebuilt Release Binaries**: Automated multi-platform GitHub Actions release artifacts.
 
 ---
 
