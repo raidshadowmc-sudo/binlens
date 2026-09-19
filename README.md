@@ -140,11 +140,11 @@ binlens --json checksec target_binary.exe
 
 ## Roadmap
 
-* **Mach-O Format Support**: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
-* **Cryptographic Authenticode Validation**: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
-* **MSVC Rich Header Analysis**: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
-* **YARA Rule Integration**: Native rule compilation and matching against mapped binary memory.
-* **Entry Point Disassembly Preview**: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
+* **[x] MSVC Rich Header Analysis**: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
+* **[ ] Mach-O Format Support**: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
+* **[ ] Cryptographic Authenticode Validation**: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
+* **[ ] YARA Rule Integration**: Native rule compilation and matching against mapped binary memory.
+* **[ ] Entry Point Disassembly Preview**: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 
 ---
 

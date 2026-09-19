@@ -1,4 +1,4 @@
-﻿use crate::entropy::{entropy_badge, render_entropy_bar, render_entropy_histogram};
+use crate::entropy::{entropy_badge, render_entropy_bar, render_entropy_histogram};
 use crate::types::{BinaryFormat, BinaryReport};
 use colored::*;
 
@@ -127,6 +127,25 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64]) {
         if report.exports.len() > 8 {
             println!("  ... and {} more exported symbols", report.exports.len() - 8);
         }
+    }
+
+    // 7. MSVC Rich Header (Compiler Telemetry)
+    if let Some(ref rich) = report.rich_header {
+        println!("\n{}", "─── [ MSVC RICH HEADER (COMPILER TELEMETRY) ] ───────────────────────────────".bold());
+        println!("  Offset: 0x{:X} | XOR Key: 0x{:08X} | Records: {}", rich.raw_offset, rich.xor_key, rich.entries.len());
+        println!("  ┌──────────────────────┬─────────────┬───────────┬─────────────────────────┐");
+        println!("  │ Tool / Component     │ Build ID    │ Count     │ Identified Version      │");
+        println!("  ├──────────────────────┼─────────────┼───────────┼─────────────────────────┤");
+        for entry in &rich.entries {
+            let msvc_str = entry.msvc_version.as_deref().unwrap_or("-");
+            println!("  │ {:<20} │ {:<11} │ {:<9} │ {:<23} │",
+                entry.tool_name.cyan(),
+                entry.build_id,
+                entry.count,
+                msvc_str
+            );
+        }
+        println!("  └──────────────────────┴─────────────┴───────────┴─────────────────────────┘");
     }
 
     // 7. Interesting Indicators & Strings

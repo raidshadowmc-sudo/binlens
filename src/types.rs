@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum BinaryFormat {
@@ -50,6 +50,23 @@ pub struct ExportInfo {
     pub rva: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RichHeaderEntry {
+    pub comp_id: u32,
+    pub prod_id: u16,
+    pub build_id: u16,
+    pub count: u32,
+    pub tool_name: String,
+    pub msvc_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RichHeaderInfo {
+    pub xor_key: u32,
+    pub raw_offset: usize,
+    pub entries: Vec<RichHeaderEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SecurityMitigations {
     pub aslr: bool,
@@ -86,6 +103,7 @@ pub struct BinaryReport {
     pub sections: Vec<SectionInfo>,
     pub imports: Vec<ImportInfo>,
     pub exports: Vec<ExportInfo>,
+    pub rich_header: Option<RichHeaderInfo>,
     pub imphash: Option<String>,
     pub interesting_strings: Vec<CategorizedString>,
 }

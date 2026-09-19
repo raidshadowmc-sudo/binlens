@@ -294,6 +294,7 @@ fn test_diff_headers_distinguish_identical_basenames() {
         sections: vec![],
         imports: vec![],
         exports: vec![],
+        rich_header: None,
         imphash: None,
         interesting_strings: vec![],
     };
@@ -503,4 +504,52 @@ fn test_seh_x64_no_seh_flag() {
 
     let report = binlens::pe::parse_pe(&pe, "test_no_seh.exe").expect("Parse failed");
     assert_eq!(report.mitigations.seh, false, "SEH must be false on x64 if NO_SEH flag is set");
+}
+
+#[test]
+fn test_pe_rich_header_parsing() {
+    // Construct a PE with synthetic DanS ... Rich header between 0x80 and e_lfanew
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    let e_lfanew = 256;
+    pe[0x3C..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
+    pe[e_lfanew..e_lfanew+4].copy_from_slice(b"PE\0\0");
+    let file_hdr = e_lfanew + 4;
+    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes());
+
+    let xor_key: u32 = 0xA1B2C3D4;
+    let dans_magic: u32 = 0x536E6144; // "DanS"
+    let rich_magic = b"Rich";
+
+    // Place DanS at 0x80
+    let dans_off = 0x80;
+    pe[dans_off..dans_off+4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
+    pe[dans_off+4..dans_off+8].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off+8..dans_off+12].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off+12..dans_off+16].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+
+    // Entry 1: Utc1930_C (prod_id 0x0101), build 33145, count 42
+    let comp_id_1: u32 = (0x0101 << 16) | 33145;
+    let count_1: u32 = 42;
+    pe[dans_off+16..dans_off+20].copy_from_slice(&(comp_id_1 ^ xor_key).to_le_bytes());
+    pe[dans_off+20..dans_off+24].copy_from_slice(&(count_1 ^ xor_key).to_le_bytes());
+
+    // Rich footer at dans_off + 24
+    let rich_off = dans_off + 24;
+    pe[rich_off..rich_off+4].copy_from_slice(rich_magic);
+    pe[rich_off+4..rich_off+8].copy_from_slice(&xor_key.to_le_bytes());
+
+    let report = binlens::pe::parse_pe(&pe, "test_rich.exe").expect("Parse failed");
+    let rich = report.rich_header.expect("Rich header was not found");
+    assert_eq!(rich.xor_key, xor_key);
+    assert_eq!(rich.raw_offset, dans_off);
+    assert_eq!(rich.entries.len(), 1);
+    assert_eq!(rich.entries[0].prod_id, 0x0101);
+    assert_eq!(rich.entries[0].build_id, 33145);
+    assert_eq!(rich.entries[0].count, 42);
+    assert_eq!(rich.entries[0].tool_name, "Utc1930_C");
+    assert_eq!(rich.entries[0].msvc_version.as_deref(), Some("Visual Studio 2022 (17.0)"));
 }
