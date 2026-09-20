@@ -1,4 +1,4 @@
-﻿use crate::types::CategorizedString;
+use crate::types::CategorizedString;
 
 pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
     let mut results = Vec::new();
@@ -70,7 +70,8 @@ fn process_and_classify(s: &str, offset: usize, results: &mut Vec<CategorizedStr
 fn classify_string(s: &str) -> Option<&'static str> {
     let lower = s.to_lowercase();
 
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ftp://") {
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ftp://")
+    {
         return Some("URL");
     }
 
@@ -78,7 +79,10 @@ fn classify_string(s: &str) -> Option<&'static str> {
         return Some("IPv4");
     }
 
-    if lower.starts_with("hkey_") || lower.starts_with("software\\") || lower.starts_with("system\\currentcontrolset") {
+    if lower.starts_with("hkey_")
+        || lower.starts_with("software\\")
+        || lower.starts_with("system\\currentcontrolset")
+    {
         return Some("Registry");
     }
 
@@ -115,7 +119,10 @@ fn classify_string(s: &str) -> Option<&'static str> {
     // Only tag as suspicious API if string length is bounded (not a giant merged concatenation)
     if s.len() <= 64 {
         for api in &suspicious_apis {
-            if lower == *api || lower == format!("{}.exe", api) || lower.starts_with(&format!("{}(", api)) {
+            if lower == *api
+                || lower == format!("{}.exe", api)
+                || lower.starts_with(&format!("{}(", api))
+            {
                 return Some("Suspicious API/Command");
             }
         }

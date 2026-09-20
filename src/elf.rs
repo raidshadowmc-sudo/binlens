@@ -1,6 +1,8 @@
 use crate::entropy::calculate_entropy;
 use crate::pe::hex_encode;
-use crate::types::{BinaryFormat, BinaryReport, ExportInfo, ImportInfo, SectionInfo, SecurityMitigations};
+use crate::types::{
+    BinaryFormat, BinaryReport, ExportInfo, ImportInfo, SectionInfo, SecurityMitigations,
+};
 use md5::Md5;
 use sha2::{Digest, Sha256};
 
@@ -69,14 +71,23 @@ pub fn read_u64(buf: &[u8], offset: usize, be: bool) -> Option<u64> {
 }
 
 pub fn read_cstring(buf: &[u8], offset: usize) -> Option<String> {
+    read_cstring_bounded(buf, offset, 1024)
+}
+
+pub fn read_cstring_bounded(buf: &[u8], offset: usize, max_len: usize) -> Option<String> {
     if offset >= buf.len() {
         return None;
     }
+    let limit = (offset + max_len).min(buf.len());
     let mut end = offset;
-    while end < buf.len() && buf[end] != 0 {
+    while end < limit && buf[end] != 0 {
         end += 1;
     }
-    String::from_utf8(buf[offset..end].to_vec()).ok()
+    if end < buf.len() && buf[end] == 0 {
+        String::from_utf8(buf[offset..end].to_vec()).ok()
+    } else {
+        None
+    }
 }
 
 pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
@@ -116,7 +127,9 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         let shentsize = read_u16(data, 58, be)? as usize;
         let shnum = read_u16(data, 60, be)? as usize;
         let shstrndx = read_u16(data, 62, be)? as usize;
-        (entry, phoff, shoff, phentsize, phnum, shentsize, shnum, shstrndx)
+        (
+            entry, phoff, shoff, phentsize, phnum, shentsize, shnum, shstrndx,
+        )
     } else {
         let entry = read_u32(data, 24, be)? as u64;
         let phoff = read_u32(data, 28, be)? as usize;
@@ -126,12 +139,15 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         let shentsize = read_u16(data, 46, be)? as usize;
         let shnum = read_u16(data, 48, be)? as usize;
         let shstrndx = read_u16(data, 50, be)? as usize;
-        (entry, phoff, shoff, phentsize, phnum, shentsize, shnum, shstrndx)
+        (
+            entry, phoff, shoff, phentsize, phnum, shentsize, shnum, shstrndx,
+        )
     };
 
     let mut has_gnu_stack = false;
     let mut nx_enabled = false;
-    let mut relro = "None".to_string();
+    let mut has_relro_segment = false;
+    let mut has_interp = false;
     let mut dynamic_offset: Option<usize> = None;
     let mut dynamic_size: usize = 0;
 
@@ -139,7 +155,10 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         let off = phoff + (i * phentsize);
         if off + phentsize <= data.len() {
             let p_type = read_u32(data, off, be).unwrap_or(0);
-            if p_type == 0x6474e551 {
+            if p_type == 3 {
+                // PT_INTERP
+                has_interp = true;
+            } else if p_type == 0x6474e551 {
                 // PT_GNU_STACK
                 has_gnu_stack = true;
                 let flags = if is_64 {
@@ -155,13 +174,19 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 }
             } else if p_type == 0x6474e552 {
                 // PT_GNU_RELRO
-                relro = "Partial / Full".to_string();
+                has_relro_segment = true;
             } else if p_type == 2 {
                 // PT_DYNAMIC
                 let (off_val, size_val) = if is_64 {
-                    (read_u64(data, off + 8, be).unwrap_or(0) as usize, read_u64(data, off + 32, be).unwrap_or(0) as usize)
+                    (
+                        read_u64(data, off + 8, be).unwrap_or(0) as usize,
+                        read_u64(data, off + 32, be).unwrap_or(0) as usize,
+                    )
                 } else {
-                    (read_u32(data, off + 4, be).unwrap_or(0) as usize, read_u32(data, off + 16, be).unwrap_or(0) as usize)
+                    (
+                        read_u32(data, off + 4, be).unwrap_or(0) as usize,
+                        read_u32(data, off + 16, be).unwrap_or(0) as usize,
+                    )
                 };
                 dynamic_offset = Some(off_val);
                 dynamic_size = size_val;
@@ -172,8 +197,6 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     if !has_gnu_stack {
         nx_enabled = false; // Default for Linux when no PT_GNU_STACK is present
     }
-
-    let is_pie = e_type == 3;
 
     let shstrtab_offset = if shstrndx < shnum {
         let str_sh_off = shoff + (shstrndx * shentsize);
@@ -202,7 +225,8 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         let sh_name_idx = read_u32(data, off, be).unwrap_or(0) as usize;
         let sh_type = read_u32(data, off + 4, be).unwrap_or(0);
         let name = if shstrtab_offset > 0 {
-            read_cstring(data, shstrtab_offset + sh_name_idx).unwrap_or_else(|| "unnamed".to_string())
+            read_cstring(data, shstrtab_offset + sh_name_idx)
+                .unwrap_or_else(|| "unnamed".to_string())
         } else {
             format!("sec_{}", i)
         };
@@ -225,7 +249,8 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             (addr, offset, size, flags, link, entsize)
         };
 
-        if name == ".dynstr" || (sh_type == 3 && dynstr_offset.is_none() && name.contains("dynstr")) {
+        if name == ".dynstr" || (sh_type == 3 && dynstr_offset.is_none() && name.contains("dynstr"))
+        {
             dynstr_offset = Some(sec_offset);
         }
         if sh_type == 11 || name == ".dynsym" {
@@ -279,14 +304,23 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     // Extract dynamic library dependencies (DT_NEEDED) and symbols from .dynsym/.dynamic
     let mut needed_libs = Vec::new();
-    if let (Some(dyn_off), Some(str_off)) = (dynamic_offset, dynstr_offset) {
+    let mut bind_now = false;
+    let mut has_df_1_pie = false;
+
+    if let Some(dyn_off) = dynamic_offset {
         let entry_size = if is_64 { 16 } else { 8 };
         let mut curr = dyn_off;
         while curr + entry_size <= data.len() && (curr - dyn_off) < dynamic_size {
             let (tag, val) = if is_64 {
-                (read_u64(data, curr, be).unwrap_or(0), read_u64(data, curr + 8, be).unwrap_or(0) as usize)
+                (
+                    read_u64(data, curr, be).unwrap_or(0),
+                    read_u64(data, curr + 8, be).unwrap_or(0) as usize,
+                )
             } else {
-                (read_u32(data, curr, be).unwrap_or(0) as u64, read_u32(data, curr + 4, be).unwrap_or(0) as usize)
+                (
+                    read_u32(data, curr, be).unwrap_or(0) as u64,
+                    read_u32(data, curr + 4, be).unwrap_or(0) as usize,
+                )
             };
             if tag == 0 {
                 // DT_NULL
@@ -294,13 +328,46 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             }
             if tag == 1 {
                 // DT_NEEDED
-                if let Some(lib_name) = read_cstring(data, str_off + val) {
-                    needed_libs.push(lib_name);
+                if let Some(str_off) = dynstr_offset {
+                    if let Some(lib_name) = read_cstring(data, str_off + val) {
+                        needed_libs.push(lib_name);
+                    }
+                }
+            } else if tag == 5 && dynstr_offset.is_none() {
+                // DT_STRTAB
+                dynstr_offset = Some(val);
+            } else if tag == 24 {
+                // DT_BIND_NOW
+                bind_now = true;
+            } else if tag == 30 {
+                // DT_FLAGS: DF_BIND_NOW = 0x01
+                if (val & 0x01) != 0 {
+                    bind_now = true;
+                }
+            } else if tag == 0x6ffffffb {
+                // DT_FLAGS_1: DF_1_NOW = 0x01, DF_1_PIE = 0x08000000
+                if (val & 0x01) != 0 {
+                    bind_now = true;
+                }
+                if (val & 0x0800_0000) != 0 {
+                    has_df_1_pie = true;
                 }
             }
             curr += entry_size;
         }
     }
+
+    let relro = if has_relro_segment {
+        if bind_now {
+            "Full".to_string()
+        } else {
+            "Partial".to_string()
+        }
+    } else {
+        "None".to_string()
+    };
+
+    let is_pie = e_type == 3 && (has_df_1_pie || has_interp || needed_libs.is_empty());
 
     let mut imports = Vec::new();
     let mut exports = Vec::new();
@@ -351,7 +418,11 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             for (idx, lib) in needed_libs.iter().enumerate() {
                 imports.push(ImportInfo {
                     dll: lib.clone(),
-                    functions: if idx == 0 { imported_funcs.clone() } else { vec![] },
+                    functions: if idx == 0 {
+                        imported_funcs.clone()
+                    } else {
+                        vec![]
+                    },
                 });
             }
         } else if !imported_funcs.is_empty() {
@@ -389,7 +460,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         is_likely_packed: overall_entropy >= 7.2,
         mitigations: SecurityMitigations {
             aslr: is_pie,
-            high_entropy_va: is_64,
+            high_entropy_va: false,
             dep_nx: nx_enabled,
             seh: false,
             cfg: false,

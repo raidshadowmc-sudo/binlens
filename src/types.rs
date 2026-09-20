@@ -107,3 +107,40 @@ pub struct BinaryReport {
     pub imphash: Option<String>,
     pub interesting_strings: Vec<CategorizedString>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MitigationDrift {
+    pub mitigation: String,
+    pub before: bool,
+    pub after: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SectionDelta {
+    pub name: String,
+    pub action: String,
+    pub size_delta: i64,
+    pub entropy_before: Option<f64>,
+    pub entropy_after: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImportDelta {
+    pub dll: String,
+    pub action: String,
+    pub api_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffReport {
+    pub file_a: String,
+    pub file_b: String,
+    pub size_delta: i64,
+    pub entropy_delta: f64,
+    pub md5_match: bool,
+    pub sha256_match: bool,
+    pub mitigations_drift: Vec<MitigationDrift>,
+    pub section_deltas: Vec<SectionDelta>,
+    pub import_deltas: Vec<ImportDelta>,
+}

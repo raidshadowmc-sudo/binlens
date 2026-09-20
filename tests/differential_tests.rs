@@ -1,5 +1,5 @@
-use std::process::Command;
 use binlens::pe::parse_pe;
+use std::process::Command;
 
 #[test]
 fn test_differential_with_pefile_on_system32_cmd() {
@@ -33,20 +33,36 @@ print(json.dumps(result))
         .output()
         .expect("Failed to execute python with pefile");
 
-    assert!(output.status.success(), "Python pefile execution failed: {:?}", String::from_utf8_lossy(&output.stderr));
-    let pefile_data: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON from pefile");
+    assert!(
+        output.status.success(),
+        "Python pefile execution failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pefile_data: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse JSON from pefile");
 
     // Compare Imphash
     let pefile_imphash = pefile_data["imphash"].as_str().unwrap();
-    assert_eq!(report.imphash.as_deref(), Some(pefile_imphash), "Imphash differential mismatch on cmd.exe!");
+    assert_eq!(
+        report.imphash.as_deref(),
+        Some(pefile_imphash),
+        "Imphash differential mismatch on cmd.exe!"
+    );
 
     // Compare EntryPoint
     let pefile_entry = pefile_data["entry_point"].as_u64().unwrap();
-    assert_eq!(report.entry_point, pefile_entry, "Entry point mismatch on cmd.exe!");
+    assert_eq!(
+        report.entry_point, pefile_entry,
+        "Entry point mismatch on cmd.exe!"
+    );
 
     // Compare Section Count
     let pefile_sec_count = pefile_data["sections_count"].as_u64().unwrap() as usize;
-    assert_eq!(report.sections.len(), pefile_sec_count, "Section count mismatch on cmd.exe!");
+    assert_eq!(
+        report.sections.len(),
+        pefile_sec_count,
+        "Section count mismatch on cmd.exe!"
+    );
 
     // Compare Section Names & Sizes
     let pefile_sections = pefile_data["sections"].as_array().unwrap();
@@ -76,11 +92,13 @@ import sys
 
 pe = pefile.PE(sys.argv[1])
 exports = []
+total_count = 0
 if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
-    for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols[:20]:
+    total_count = len(pe.DIRECTORY_ENTRY_EXPORT.symbols)
+    for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols[:50]:
         name = exp.name.decode('utf-8') if exp.name else f"Ordinal#{exp.ordinal}"
         exports.append({"name": name, "ordinal": exp.ordinal, "rva": exp.address})
-print(json.dumps(exports))
+print(json.dumps({"total": total_count, "sample": exports}))
 "#;
 
     let output = Command::new("python")
@@ -89,9 +107,21 @@ print(json.dumps(exports))
         .expect("Failed to execute python with pefile");
 
     assert!(output.status.success(), "Python pefile execution failed");
-    let pefile_exports: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+    let pefile_data: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+    let total_exports = pefile_data["total"].as_u64().unwrap() as usize;
+    let pefile_exports = pefile_data["sample"].as_array().unwrap();
 
-    assert!(!report.exports.is_empty(), "binlens found 0 exports in kernel32.dll");
+    assert!(
+        total_exports > 1000,
+        "kernel32 should have over 1000 exports, got {}",
+        total_exports
+    );
+    assert_eq!(
+        report.exports.len(),
+        total_exports,
+        "All exports should be parsed without artificial 256 truncation"
+    );
 
     for (i, exp) in pefile_exports.iter().enumerate() {
         let expected_name = exp["name"].as_str().unwrap();
@@ -99,9 +129,21 @@ print(json.dumps(exports))
         let expected_rva = exp["rva"].as_u64().unwrap() as u32;
 
         let bl_exp = &report.exports[i];
-        assert_eq!(bl_exp.name, expected_name, "Export name mismatch at index {}", i);
-        assert_eq!(bl_exp.ordinal, expected_ord, "Export ordinal mismatch at index {}", i);
-        assert_eq!(bl_exp.rva, expected_rva, "Export RVA mismatch at index {}", i);
+        assert_eq!(
+            bl_exp.name, expected_name,
+            "Export name mismatch at index {}",
+            i
+        );
+        assert_eq!(
+            bl_exp.ordinal, expected_ord,
+            "Export ordinal mismatch at index {}",
+            i
+        );
+        assert_eq!(
+            bl_exp.rva, expected_rva,
+            "Export RVA mismatch at index {}",
+            i
+        );
     }
 }
 
@@ -159,15 +201,26 @@ print(json.dumps(results))
         .output()
         .expect("Failed to execute python with pefile");
 
-    assert!(output.status.success(), "Python execution failed: {:?}", String::from_utf8_lossy(&output.stderr));
-    let ground_truth: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+    assert!(
+        output.status.success(),
+        "Python execution failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ground_truth: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
 
     for target in &existing_targets {
         let data = std::fs::read(target).expect("Failed to read binary");
-        let file_name = std::path::Path::new(target).file_name().unwrap().to_str().unwrap();
+        let file_name = std::path::Path::new(target)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
         let report = parse_pe(&data, file_name).expect("Failed to parse PE with binlens");
 
-        let expected_cfg = ground_truth[*target]["cfg"].as_bool().expect("Missing cfg in python output");
+        let expected_cfg = ground_truth[*target]["cfg"]
+            .as_bool()
+            .expect("Missing cfg in python output");
         assert_eq!(
             report.mitigations.cfg, expected_cfg,
             "Differential CFG mismatch for {}: binlens reported {}, pefile reported {}",
@@ -208,18 +261,27 @@ print(json.dumps(result))
         .expect("Failed to execute python with pefile");
 
     assert!(output.status.success());
-    let ground_truth: serde_json::Value = serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
+    let ground_truth: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse JSON");
 
     let data = std::fs::read(target).expect("Failed to read binary");
     let report = parse_pe(&data, "cmd.exe").expect("Failed to parse PE with binlens");
 
     if ground_truth["has_rich"].as_bool().unwrap() {
-        let rich = report.rich_header.expect("binlens should detect Rich Header on cmd.exe");
+        let rich = report
+            .rich_header
+            .expect("binlens should detect Rich Header on cmd.exe");
         let expected_key = ground_truth["checksum"].as_u64().unwrap() as u32;
         let expected_count = ground_truth["num_values"].as_u64().unwrap() as usize;
 
-        assert_eq!(rich.xor_key, expected_key, "Rich XOR key mismatch with pefile");
-        assert_eq!(rich.entries.len(), expected_count, "Rich entry count mismatch with pefile");
+        assert_eq!(
+            rich.xor_key, expected_key,
+            "Rich XOR key mismatch with pefile"
+        );
+        assert_eq!(
+            rich.entries.len(),
+            expected_count,
+            "Rich entry count mismatch with pefile"
+        );
     }
 }
-

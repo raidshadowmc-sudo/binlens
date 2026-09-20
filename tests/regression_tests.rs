@@ -1,8 +1,8 @@
-use binlens::elf::parse_elf;
-use binlens::pe::{parse_pe, rva_to_offset, RawSection};
 use binlens::diff::compare_binaries;
-use binlens::types::{BinaryReport, BinaryFormat, SecurityMitigations};
+use binlens::elf::parse_elf;
+use binlens::pe::{RawSection, parse_pe, rva_to_offset};
 use binlens::strings::extract_strings;
+use binlens::types::{BinaryFormat, BinaryReport, SecurityMitigations};
 
 #[test]
 fn test_rva_to_offset_bounds_and_zero_raw_data() {
@@ -25,13 +25,25 @@ fn test_rva_to_offset_bounds_and_zero_raw_data() {
     assert_eq!(rva_to_offset(0x1100, &sections), Some(0x500));
 
     // 2) RVA 0x1300 -> delta = 0x300 >= raw_size (0x200) -> In memory padding, NOT in raw file!
-    assert_eq!(rva_to_offset(0x1300, &sections), None, "RVA in virtual padding beyond raw size must return None");
+    assert_eq!(
+        rva_to_offset(0x1300, &sections),
+        None,
+        "RVA in virtual padding beyond raw size must return None"
+    );
 
     // 3) RVA 0x2050 -> in .bss section with size_of_raw_data == 0 -> Must return None!
-    assert_eq!(rva_to_offset(0x2050, &sections), None, "RVA in uninitialized BSS section must return None");
+    assert_eq!(
+        rva_to_offset(0x2050, &sections),
+        None,
+        "RVA in uninitialized BSS section must return None"
+    );
 
     // 4) RVA 0x0080 -> in PE header before sections -> Must map 1:1 to offset 0x80
-    assert_eq!(rva_to_offset(0x0080, &sections), Some(0x80), "Header RVA before first section must map 1:1");
+    assert_eq!(
+        rva_to_offset(0x0080, &sections),
+        Some(0x80),
+        "Header RVA before first section must map 1:1"
+    );
 }
 
 #[test]
@@ -46,7 +58,7 @@ fn test_elf_nx_default_when_no_pt_gnu_stack() {
     elf[20] = 1;
     elf[32] = 64; // e_phoff
     elf[54] = 56; // e_phentsize
-    elf[56] = 1;  // e_phnum = 1 (A single PT_LOAD segment, NO PT_GNU_STACK)
+    elf[56] = 1; // e_phnum = 1 (A single PT_LOAD segment, NO PT_GNU_STACK)
     elf[64..68].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
 
     let report = parse_elf(&elf, "test_no_nx.elf").expect("Failed to parse minimal ELF");
@@ -74,8 +86,15 @@ fn test_elf_big_endian_parsing() {
     elf[24..28].copy_from_slice(&[0x10, 0x00, 0x00, 0x00]);
 
     let report = parse_elf(&elf, "test_be.elf").expect("Failed to parse Big Endian ELF");
-    assert_eq!(report.entry_point, 0x1000_0000, "Entry point must be parsed using big-endian ordering");
-    assert!(report.architecture.contains("PowerPC") || report.architecture.contains("PPC") || !report.architecture.contains("Unknown"));
+    assert_eq!(
+        report.entry_point, 0x1000_0000,
+        "Entry point must be parsed using big-endian ordering"
+    );
+    assert!(
+        report.architecture.contains("PowerPC")
+            || report.architecture.contains("PPC")
+            || !report.architecture.contains("Unknown")
+    );
 }
 
 #[test]
@@ -94,45 +113,49 @@ fn test_pe_imphash_standard_format_with_ordinals() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes()); // e_lfanew = 64
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
-    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes()); // opt hdr size
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes()); // opt hdr size
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
     // Import Directory RVA at opt_hdr + 112 + 8
     let import_dir_entry = opt_hdr + 112 + 8;
-    pe[import_dir_entry..import_dir_entry+4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
-    pe[import_dir_entry+4..import_dir_entry+8].copy_from_slice(&40u32.to_le_bytes());
+    pe[import_dir_entry..import_dir_entry + 4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[import_dir_entry + 4..import_dir_entry + 8].copy_from_slice(&40u32.to_le_bytes());
 
     // Section header: .rdata at offset opt_hdr + 240
     let sec_hdr = opt_hdr + 240;
-    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
-    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize
-    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtAddr = 0x200
-    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
-    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
-    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes()); // R
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtAddr = 0x200
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes()); // R
 
     // Import Directory at offset 0x200 (RVA 0x200)
     let imp_desc = 0x200;
     let ilt_rva = 0x250u32;
     let name_rva = 0x280u32;
-    pe[imp_desc..imp_desc+4].copy_from_slice(&ilt_rva.to_le_bytes()); // OriginalFirstThunk
-    pe[imp_desc+12..imp_desc+16].copy_from_slice(&name_rva.to_le_bytes()); // Name
-    pe[imp_desc+16..imp_desc+20].copy_from_slice(&ilt_rva.to_le_bytes()); // FirstThunk
+    pe[imp_desc..imp_desc + 4].copy_from_slice(&ilt_rva.to_le_bytes()); // OriginalFirstThunk
+    pe[imp_desc + 12..imp_desc + 16].copy_from_slice(&name_rva.to_le_bytes()); // Name
+    pe[imp_desc + 16..imp_desc + 20].copy_from_slice(&ilt_rva.to_le_bytes()); // FirstThunk
 
     // Name at offset 0x280 (RVA 0x280)
-    pe[0x280..0x280+12].copy_from_slice(b"WS2_32.dll\0\0");
+    pe[0x280..0x280 + 12].copy_from_slice(b"WS2_32.dll\0\0");
 
     // ILT at offset 0x250 (RVA 0x250): import by ordinal 12 (high bit set for 64-bit)
     let ord_entry = 0x8000_0000_0000_000C_u64;
-    pe[0x250..0x250+8].copy_from_slice(&ord_entry.to_le_bytes());
+    pe[0x250..0x250 + 8].copy_from_slice(&ord_entry.to_le_bytes());
 
     let report = parse_pe(&pe, "test_imphash.exe").expect("Failed to parse PE with ordinal import");
-    assert_eq!(report.imphash, Some(expected_hash), "Imphash must match Mandiant/pefile standard (ws2_32.ord12)");
+    assert_eq!(
+        report.imphash,
+        Some(expected_hash),
+        "Imphash must match Mandiant/pefile standard (ws2_32.ord12)"
+    );
 }
 
 #[test]
@@ -142,55 +165,61 @@ fn test_pe_export_ordinal_base_and_function_rva() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
-    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
     // Export Directory RVA at opt_hdr + 112 (Data Directory 0)
     let export_dir_entry = opt_hdr + 112;
-    pe[export_dir_entry..export_dir_entry+4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
-    pe[export_dir_entry+4..export_dir_entry+8].copy_from_slice(&100u32.to_le_bytes());
+    pe[export_dir_entry..export_dir_entry + 4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[export_dir_entry + 4..export_dir_entry + 8].copy_from_slice(&100u32.to_le_bytes());
 
     // Section header: .edata at offset opt_hdr + 240
     let sec_hdr = opt_hdr + 240;
-    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".edata\0\0");
-    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes());
-    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
-    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize
-    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
-    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes());
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".edata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes());
 
     // Export Directory at offset 0x200 (RVA 0x200)
     let exp = 0x200;
-    pe[exp+16..exp+20].copy_from_slice(&50u32.to_le_bytes()); // Base = 50
-    pe[exp+20..exp+24].copy_from_slice(&1u32.to_le_bytes());  // NumberOfFunctions = 1
-    pe[exp+24..exp+28].copy_from_slice(&1u32.to_le_bytes());  // NumberOfNames = 1
+    pe[exp + 16..exp + 20].copy_from_slice(&50u32.to_le_bytes()); // Base = 50
+    pe[exp + 20..exp + 24].copy_from_slice(&1u32.to_le_bytes()); // NumberOfFunctions = 1
+    pe[exp + 24..exp + 28].copy_from_slice(&1u32.to_le_bytes()); // NumberOfNames = 1
     let func_rva_table = 0x250u32;
     let name_rva_table = 0x260u32;
     let ord_table = 0x270u32;
-    pe[exp+28..exp+32].copy_from_slice(&func_rva_table.to_le_bytes()); // AddressOfFunctions
-    pe[exp+32..exp+36].copy_from_slice(&name_rva_table.to_le_bytes()); // AddressOfNames
-    pe[exp+36..exp+40].copy_from_slice(&ord_table.to_le_bytes());      // AddressOfNameOrdinals
+    pe[exp + 28..exp + 32].copy_from_slice(&func_rva_table.to_le_bytes()); // AddressOfFunctions
+    pe[exp + 32..exp + 36].copy_from_slice(&name_rva_table.to_le_bytes()); // AddressOfNames
+    pe[exp + 36..exp + 40].copy_from_slice(&ord_table.to_le_bytes()); // AddressOfNameOrdinals
 
     // Function RVA at 0x250: 0x1050
-    pe[0x250..0x250+4].copy_from_slice(&0x1050u32.to_le_bytes());
+    pe[0x250..0x250 + 4].copy_from_slice(&0x1050u32.to_le_bytes());
     // Name RVA at 0x260: 0x280 ("ExportedApi")
-    pe[0x260..0x260+4].copy_from_slice(&0x280u32.to_le_bytes());
+    pe[0x260..0x260 + 4].copy_from_slice(&0x280u32.to_le_bytes());
     // Ordinal index at 0x270: index 0 (u16)
-    pe[0x270..0x270+2].copy_from_slice(&0u16.to_le_bytes());
+    pe[0x270..0x270 + 2].copy_from_slice(&0u16.to_le_bytes());
     // Name string at 0x280
-    pe[0x280..0x280+12].copy_from_slice(b"ExportedApi\0");
+    pe[0x280..0x280 + 12].copy_from_slice(b"ExportedApi\0");
 
     let report = parse_pe(&pe, "test_export.dll").expect("Failed to parse PE with exports");
     assert_eq!(report.exports.len(), 1);
     let exp_info = &report.exports[0];
     assert_eq!(exp_info.name, "ExportedApi");
-    assert_eq!(exp_info.ordinal, 50, "Ordinal must include Base (Base 50 + index 0 = 50)");
-    assert_eq!(exp_info.rva, 0x1050, "Export RVA must be read from AddressOfFunctions (expected 0x1050, got 0)");
+    assert_eq!(
+        exp_info.ordinal, 50,
+        "Ordinal must include Base (Base 50 + index 0 = 50)"
+    );
+    assert_eq!(
+        exp_info.rva, 0x1050,
+        "Export RVA must be read from AddressOfFunctions (expected 0x1050, got 0)"
+    );
 }
 #[test]
 fn test_elf_imports_and_exports_parsing() {
@@ -205,34 +234,34 @@ fn test_elf_imports_and_exports_parsing() {
     elf[20] = 1;
     elf[32] = 64; // e_phoff = 64
     elf[54] = 56; // e_phentsize
-    elf[56] = 1;  // e_phnum = 1 (PT_DYNAMIC)
-    
+    elf[56] = 1; // e_phnum = 1 (PT_DYNAMIC)
+
     // PT_DYNAMIC at offset 64
     let ph_off = 64;
-    elf[ph_off..ph_off+4].copy_from_slice(&2u32.to_le_bytes()); // p_type = PT_DYNAMIC (2)
-    elf[ph_off+8..ph_off+16].copy_from_slice(&200u64.to_le_bytes()); // p_offset = 200
-    elf[ph_off+32..ph_off+40].copy_from_slice(&64u64.to_le_bytes());  // p_filesz = 64
+    elf[ph_off..ph_off + 4].copy_from_slice(&2u32.to_le_bytes()); // p_type = PT_DYNAMIC (2)
+    elf[ph_off + 8..ph_off + 16].copy_from_slice(&200u64.to_le_bytes()); // p_offset = 200
+    elf[ph_off + 32..ph_off + 40].copy_from_slice(&64u64.to_le_bytes()); // p_filesz = 64
 
     // Section headers: 3 sections: [0] null, [1] .dynstr at 400, [2] .dynsym at 600
     let sh_off = 800;
     elf[40] = (sh_off & 0xFF) as u8; // e_shoff = 800
     elf[41] = ((sh_off >> 8) & 0xFF) as u8;
     elf[58] = 64; // e_shentsize = 64
-    elf[60] = 3;  // e_shnum = 3
+    elf[60] = 3; // e_shnum = 3
 
     // Section 1: .dynstr at offset 400
     let s1 = sh_off + 64;
-    elf[s1+4..s1+8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB = 3
-    elf[s1+24..s1+32].copy_from_slice(&400u64.to_le_bytes()); // sh_offset = 400
-    elf[s1+32..s1+40].copy_from_slice(&100u64.to_le_bytes()); // sh_size = 100
+    elf[s1 + 4..s1 + 8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB = 3
+    elf[s1 + 24..s1 + 32].copy_from_slice(&400u64.to_le_bytes()); // sh_offset = 400
+    elf[s1 + 32..s1 + 40].copy_from_slice(&100u64.to_le_bytes()); // sh_size = 100
 
     // Section 2: .dynsym at offset 600
     let s2 = sh_off + 128;
-    elf[s2+4..s2+8].copy_from_slice(&11u32.to_le_bytes()); // SHT_DYNSYM = 11
-    elf[s2+24..s2+32].copy_from_slice(&600u64.to_le_bytes()); // sh_offset = 600
-    elf[s2+32..s2+40].copy_from_slice(&48u64.to_le_bytes());  // sh_size = 48 (2 symbols: null + 1 export)
-    elf[s2+40..s2+44].copy_from_slice(&1u32.to_le_bytes());   // sh_link = 1 (.dynstr)
-    elf[s2+56..s2+64].copy_from_slice(&24u64.to_le_bytes());  // sh_entsize = 24
+    elf[s2 + 4..s2 + 8].copy_from_slice(&11u32.to_le_bytes()); // SHT_DYNSYM = 11
+    elf[s2 + 24..s2 + 32].copy_from_slice(&600u64.to_le_bytes()); // sh_offset = 600
+    elf[s2 + 32..s2 + 40].copy_from_slice(&48u64.to_le_bytes()); // sh_size = 48 (2 symbols: null + 1 export)
+    elf[s2 + 40..s2 + 44].copy_from_slice(&1u32.to_le_bytes()); // sh_link = 1 (.dynstr)
+    elf[s2 + 56..s2 + 64].copy_from_slice(&24u64.to_le_bytes()); // sh_entsize = 24
 
     // Strings at 400: "\0libc.so.6\0my_exported_func\0"
     elf[401..411].copy_from_slice(b"libc.so.6\0");
@@ -256,9 +285,15 @@ fn test_elf_imports_and_exports_parsing() {
     elf[632..640].copy_from_slice(&0x2000u64.to_le_bytes());
 
     let report = parse_elf(&elf, "test_dynamic.so").expect("Failed to parse dynamic ELF");
-    assert!(!report.imports.is_empty(), "Must extract DT_NEEDED library dependencies");
+    assert!(
+        !report.imports.is_empty(),
+        "Must extract DT_NEEDED library dependencies"
+    );
     assert_eq!(report.imports[0].dll, "libc.so.6");
-    assert!(!report.exports.is_empty(), "Must extract exported symbols from .dynsym");
+    assert!(
+        !report.exports.is_empty(),
+        "Must extract exported symbols from .dynsym"
+    );
     assert_eq!(report.exports[0].name, "my_exported_func");
 }
 
@@ -268,7 +303,10 @@ fn test_strings_no_runaway_concatenation() {
     let data = b"virtualalloc\0https://example.com/api\0HKEY_LOCAL_MACHINE\\Software\0";
     let categorized = extract_strings(data, 4);
 
-    let api_items: Vec<_> = categorized.iter().filter(|c| c.category == "Suspicious API/Command").collect();
+    let api_items: Vec<_> = categorized
+        .iter()
+        .filter(|c| c.category == "Suspicious API/Command")
+        .collect();
     assert_eq!(api_items.len(), 1);
     assert_eq!(api_items[0].value, "virtualalloc");
 
@@ -303,7 +341,10 @@ fn test_diff_headers_distinguish_identical_basenames() {
     report_b.file_size = 2000;
 
     let diff_lines = compare_binaries(&report_a, &report_b);
-    let header_line = diff_lines.iter().find(|l| l.contains("METRIC")).expect("Header not found");
+    let header_line = diff_lines
+        .iter()
+        .find(|l| l.contains("METRIC"))
+        .expect("Header not found");
     assert!(header_line.contains("[A]") || header_line.contains("target/debug/app.exe"));
 }
 #[test]
@@ -313,14 +354,14 @@ fn test_cfg_false_positive_without_load_config() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
     // DllCharacteristics with GUARD_CF (0x4000)
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes());
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x4000u16.to_le_bytes());
     // Data Directory 10 (Load Config) is at opt_hdr + 112 + (10 * 8) = opt_hdr + 192 -> leaves as 0!
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_fake.exe").expect("Parse failed");
@@ -337,14 +378,14 @@ fn test_safeseh_false_positive_without_load_config() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x014cu16.to_le_bytes()); // x86 32-bit
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&224u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x014cu16.to_le_bytes()); // x86 32-bit
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&224u16.to_le_bytes());
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x10bu16.to_le_bytes()); // PE32
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x10bu16.to_le_bytes()); // PE32
     // DllCharacteristics = 0 (NO_SEH is NOT set)
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0u16.to_le_bytes());
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0u16.to_le_bytes());
     // Load Config Directory (index 10) is 0
 
     let report = binlens::pe::parse_pe(&pe, "test_safeseh_fake.exe").expect("Parse failed");
@@ -362,38 +403,38 @@ fn test_cfg_x64_offset_cookie_vs_guard_check() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
-    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes()); // opt hdr size
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes()); // opt hdr size
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
     // DllCharacteristics with GUARD_CF (0x4000)
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes());
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x4000u16.to_le_bytes());
 
     // Load Config Directory entry (Data Directory 10 at opt_hdr + 112 + 10 * 8 = opt_hdr + 192)
     let lc_entry = opt_hdr + 192;
-    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
-    pe[lc_entry+4..lc_entry+8].copy_from_slice(&128u32.to_le_bytes()); // Size 128
+    pe[lc_entry..lc_entry + 4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[lc_entry + 4..lc_entry + 8].copy_from_slice(&128u32.to_le_bytes()); // Size 128
 
     // Section header: .rdata at opt_hdr + 240
     let sec_hdr = opt_hdr + 240;
-    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
-    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize
-    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtAddr = 0x200
-    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
-    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
-    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes()); // Characteristics
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes()); // VirtAddr = 0x200
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes()); // Characteristics
 
     // Load Config at offset 0x200:
     let lc_offset = 0x200;
-    pe[lc_offset..lc_offset+4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128 (0x80)
+    pe[lc_offset..lc_offset + 4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128 (0x80)
     // Offset 88: SecurityCookie != 0
-    pe[lc_offset+88..lc_offset+96].copy_from_slice(&0x1234_5678_9ABC_DEF0_u64.to_le_bytes());
+    pe[lc_offset + 88..lc_offset + 96].copy_from_slice(&0x1234_5678_9ABC_DEF0_u64.to_le_bytes());
     // Offset 112: GuardCFCheckFunctionPointer == 0
-    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0_u64.to_le_bytes());
+    pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_cookie.exe").expect("Parse failed");
     assert_eq!(
@@ -410,38 +451,41 @@ fn test_cfg_x64_valid_guard_check_passes() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
-    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes());
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes());
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
 
     // Load Config Directory entry
     let lc_entry = opt_hdr + 192;
-    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[lc_entry+4..lc_entry+8].copy_from_slice(&128u32.to_le_bytes());
+    pe[lc_entry..lc_entry + 4].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[lc_entry + 4..lc_entry + 8].copy_from_slice(&128u32.to_le_bytes());
 
     // Section header: .rdata
     let sec_hdr = opt_hdr + 240;
-    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
-    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes());
-    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes());
-    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes());
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes());
 
     // Load Config at offset 0x200:
     let lc_offset = 0x200;
-    pe[lc_offset..lc_offset+4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128
+    pe[lc_offset..lc_offset + 4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128
     // Offset 112: GuardCFCheckFunctionPointer != 0
-    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
+    pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_valid.exe").expect("Parse failed");
-    assert_eq!(report.mitigations.cfg, true, "CFG must be TRUE when GuardCFCheckFunctionPointer is non-zero");
+    assert_eq!(
+        report.mitigations.cfg, true,
+        "CFG must be TRUE when GuardCFCheckFunctionPointer is non-zero"
+    );
 }
 
 #[test]
@@ -451,38 +495,41 @@ fn test_cfg_x64_truncated_load_config_fails() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
-    pe[file_hdr+2..file_hdr+4].copy_from_slice(&1u16.to_le_bytes());
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes());
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x4000u16.to_le_bytes()); // GUARD_CF
 
     // Load Config Directory entry: size 96
     let lc_entry = opt_hdr + 192;
-    pe[lc_entry..lc_entry+4].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[lc_entry+4..lc_entry+8].copy_from_slice(&96u32.to_le_bytes());
+    pe[lc_entry..lc_entry + 4].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[lc_entry + 4..lc_entry + 8].copy_from_slice(&96u32.to_le_bytes());
 
     // Section header: .rdata
     let sec_hdr = opt_hdr + 240;
-    pe[sec_hdr..sec_hdr+8].copy_from_slice(b".rdata\0\0");
-    pe[sec_hdr+8..sec_hdr+12].copy_from_slice(&0x400u32.to_le_bytes());
-    pe[sec_hdr+12..sec_hdr+16].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[sec_hdr+16..sec_hdr+20].copy_from_slice(&0x400u32.to_le_bytes());
-    pe[sec_hdr+20..sec_hdr+24].copy_from_slice(&0x200u32.to_le_bytes());
-    pe[sec_hdr+36..sec_hdr+40].copy_from_slice(&0x40000040u32.to_le_bytes());
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes());
 
     // Load Config at offset 0x200: Size = 96
     let lc_offset = 0x200;
-    pe[lc_offset..lc_offset+4].copy_from_slice(&96u32.to_le_bytes());
+    pe[lc_offset..lc_offset + 4].copy_from_slice(&96u32.to_le_bytes());
     // Even if memory at 112 has bytes, struct size 96 doesn't reach it
-    pe[lc_offset+112..lc_offset+120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
+    pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_trunc.exe").expect("Parse failed");
-    assert_eq!(report.mitigations.cfg, false, "CFG must be FALSE when Load Config size < 120");
+    assert_eq!(
+        report.mitigations.cfg, false,
+        "CFG must be FALSE when Load Config size < 120"
+    );
 }
 
 #[test]
@@ -492,18 +539,21 @@ fn test_seh_x64_no_seh_flag() {
     pe[0..2].copy_from_slice(b"MZ");
     pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
     let nt = 64;
-    pe[nt..nt+4].copy_from_slice(b"PE\0\0");
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = nt + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
 
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
     // DllCharacteristics: NO_SEH (0x0400)
-    pe[opt_hdr+70..opt_hdr+72].copy_from_slice(&0x0400u16.to_le_bytes());
+    pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x0400u16.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_no_seh.exe").expect("Parse failed");
-    assert_eq!(report.mitigations.seh, false, "SEH must be false on x64 if NO_SEH flag is set");
+    assert_eq!(
+        report.mitigations.seh, false,
+        "SEH must be false on x64 if NO_SEH flag is set"
+    );
 }
 
 #[test]
@@ -513,12 +563,12 @@ fn test_pe_rich_header_parsing() {
     pe[0..2].copy_from_slice(b"MZ");
     let e_lfanew = 256;
     pe[0x3C..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
-    pe[e_lfanew..e_lfanew+4].copy_from_slice(b"PE\0\0");
+    pe[e_lfanew..e_lfanew + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = e_lfanew + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes());
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes());
 
     let xor_key: u32 = 0xA1B2C3D4;
     let dans_magic: u32 = 0x536E6144; // "DanS"
@@ -526,21 +576,21 @@ fn test_pe_rich_header_parsing() {
 
     // Place DanS at 0x80
     let dans_off = 0x80;
-    pe[dans_off..dans_off+4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
-    pe[dans_off+4..dans_off+8].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
-    pe[dans_off+8..dans_off+12].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
-    pe[dans_off+12..dans_off+16].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off..dans_off + 4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
+    pe[dans_off + 4..dans_off + 8].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off + 8..dans_off + 12].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off + 12..dans_off + 16].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
 
     // Entry 1: Utc1930_C (prod_id 0x0101), build 33145, count 42
     let comp_id_1: u32 = (0x0101 << 16) | 33145;
     let count_1: u32 = 42;
-    pe[dans_off+16..dans_off+20].copy_from_slice(&(comp_id_1 ^ xor_key).to_le_bytes());
-    pe[dans_off+20..dans_off+24].copy_from_slice(&(count_1 ^ xor_key).to_le_bytes());
+    pe[dans_off + 16..dans_off + 20].copy_from_slice(&(comp_id_1 ^ xor_key).to_le_bytes());
+    pe[dans_off + 20..dans_off + 24].copy_from_slice(&(count_1 ^ xor_key).to_le_bytes());
 
     // Rich footer at dans_off + 24
     let rich_off = dans_off + 24;
-    pe[rich_off..rich_off+4].copy_from_slice(rich_magic);
-    pe[rich_off+4..rich_off+8].copy_from_slice(&xor_key.to_le_bytes());
+    pe[rich_off..rich_off + 4].copy_from_slice(rich_magic);
+    pe[rich_off + 4..rich_off + 8].copy_from_slice(&xor_key.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_rich.exe").expect("Parse failed");
     let rich = report.rich_header.expect("Rich header was not found");
@@ -551,7 +601,10 @@ fn test_pe_rich_header_parsing() {
     assert_eq!(rich.entries[0].build_id, 33145);
     assert_eq!(rich.entries[0].count, 42);
     assert_eq!(rich.entries[0].tool_name, "Utc1930_C");
-    assert_eq!(rich.entries[0].msvc_version.as_deref(), Some("Visual Studio 2022 (17.0)"));
+    assert_eq!(
+        rich.entries[0].msvc_version.as_deref(),
+        Some("Visual Studio 2022 (17.0)")
+    );
 }
 
 #[test]
@@ -561,23 +614,200 @@ fn test_pe_rich_header_oversized_dos_protection() {
     pe[0..2].copy_from_slice(b"MZ");
     let e_lfanew = 7000;
     pe[0x3C..0x40].copy_from_slice(&(e_lfanew as u32).to_le_bytes());
-    pe[e_lfanew..e_lfanew+4].copy_from_slice(b"PE\0\0");
+    pe[e_lfanew..e_lfanew + 4].copy_from_slice(b"PE\0\0");
     let file_hdr = e_lfanew + 4;
-    pe[file_hdr..file_hdr+2].copy_from_slice(&0x8664u16.to_le_bytes());
-    pe[file_hdr+16..file_hdr+18].copy_from_slice(&240u16.to_le_bytes());
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
     let opt_hdr = file_hdr + 20;
-    pe[opt_hdr..opt_hdr+2].copy_from_slice(&0x20bu16.to_le_bytes());
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes());
 
     let xor_key: u32 = 0x12345678;
     let dans_magic: u32 = 0x536E6144;
     let dans_off = 0x80;
-    pe[dans_off..dans_off+4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
+    pe[dans_off..dans_off + 4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
 
     // Place Rich 5000 bytes later (> 4096 bytes threshold)
     let rich_off = dans_off + 5000;
-    pe[rich_off..rich_off+4].copy_from_slice(b"Rich");
-    pe[rich_off+4..rich_off+8].copy_from_slice(&xor_key.to_le_bytes());
+    pe[rich_off..rich_off + 4].copy_from_slice(b"Rich");
+    pe[rich_off + 4..rich_off + 8].copy_from_slice(&xor_key.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_huge_rich.exe").expect("Parse failed");
-    assert!(report.rich_header.is_none(), "Oversized (>4KB) Rich Header must be rejected to prevent memory exhaustion");
+    assert!(
+        report.rich_header.is_none(),
+        "Oversized (>4KB) Rich Header must be rejected to prevent memory exhaustion"
+    );
+}
+
+#[test]
+fn test_elf_relro_full_vs_partial_vs_none() {
+    use binlens::elf::parse_elf;
+
+    // 1. Full RELRO: PT_GNU_RELRO + PT_DYNAMIC with DT_BIND_NOW (24)
+    let mut elf_full = vec![0u8; 1024];
+    elf_full[0..4].copy_from_slice(b"\x7fELF");
+    elf_full[4] = 2; // 64-bit
+    elf_full[5] = 1; // Little endian
+    elf_full[6] = 1;
+    elf_full[16] = 3; // ET_DYN
+    elf_full[18] = 0x3E; // x86_64
+    elf_full[32] = 64; // e_phoff = 64
+    elf_full[54] = 56; // e_phentsize
+    elf_full[56] = 2; // e_phnum = 2 (PT_GNU_RELRO + PT_DYNAMIC)
+
+    // Program header 0: PT_GNU_RELRO (0x6474e552)
+    let ph0 = 64;
+    elf_full[ph0..ph0 + 4].copy_from_slice(&0x6474e552_u32.to_le_bytes());
+
+    // Program header 1: PT_DYNAMIC (2)
+    let ph1 = 64 + 56;
+    elf_full[ph1..ph1 + 4].copy_from_slice(&2_u32.to_le_bytes());
+    elf_full[ph1 + 8..ph1 + 16].copy_from_slice(&200_u64.to_le_bytes()); // p_offset = 200
+    elf_full[ph1 + 32..ph1 + 40].copy_from_slice(&32_u64.to_le_bytes()); // p_filesz = 32
+
+    // Dynamic section at 200:
+    // Entry 1: DT_BIND_NOW (24)
+    elf_full[200..208].copy_from_slice(&24_u64.to_le_bytes());
+    elf_full[208..216].copy_from_slice(&1_u64.to_le_bytes());
+    // Entry 2: DT_NULL (0)
+    elf_full[216..224].copy_from_slice(&0_u64.to_le_bytes());
+
+    let rep_full = parse_elf(&elf_full, "test_full.elf").expect("Failed to parse Full RELRO ELF");
+    assert_eq!(
+        rep_full.mitigations.relro, "Full",
+        "PT_GNU_RELRO + DT_BIND_NOW must be Full RELRO"
+    );
+    assert_eq!(
+        rep_full.mitigations.high_entropy_va, false,
+        "ELF must not report High Entropy VA (PE-specific)"
+    );
+
+    // 2. Partial RELRO: PT_GNU_RELRO without DT_BIND_NOW
+    let mut elf_partial = elf_full.clone();
+    // Overwrite DT_BIND_NOW with DT_DEBUG (21)
+    elf_partial[200..208].copy_from_slice(&21_u64.to_le_bytes());
+    let rep_part =
+        parse_elf(&elf_partial, "test_part.elf").expect("Failed to parse Partial RELRO ELF");
+    assert_eq!(
+        rep_part.mitigations.relro, "Partial",
+        "PT_GNU_RELRO without BIND_NOW must be Partial RELRO"
+    );
+
+    // 3. No RELRO: No PT_GNU_RELRO segment
+    let mut elf_none = elf_full.clone();
+    elf_none[ph0..ph0 + 4].copy_from_slice(&1_u32.to_le_bytes()); // Change to PT_LOAD (1)
+    let rep_none = parse_elf(&elf_none, "test_none.elf").expect("Failed to parse No RELRO ELF");
+    assert_eq!(
+        rep_none.mitigations.relro, "None",
+        "Absence of PT_GNU_RELRO must be None RELRO"
+    );
+}
+
+#[test]
+fn test_structured_diff_report() {
+    use binlens::diff::generate_diff_report;
+    use binlens::types::{BinaryFormat, BinaryReport, SectionInfo, SecurityMitigations};
+
+    let report_a = BinaryReport {
+        file_name: "release_v1.exe".to_string(),
+        file_size: 1000,
+        md5: "a1a1a1".to_string(),
+        sha256: "b1b1b1".to_string(),
+        format: BinaryFormat::PE64,
+        architecture: "x86_64".to_string(),
+        subsystem: "CUI".to_string(),
+        entry_point: 0x1000,
+        overall_entropy: 5.0,
+        is_likely_packed: false,
+        mitigations: SecurityMitigations {
+            aslr: true,
+            high_entropy_va: true,
+            dep_nx: true,
+            seh: false,
+            cfg: true,
+            authenticode_signed: true,
+            has_rwx_sections: false,
+            pie: false,
+            relro: "None".to_string(),
+        },
+        sections: vec![SectionInfo {
+            name: ".text".to_string(),
+            virtual_address: 0x1000,
+            virtual_size: 500,
+            raw_offset: 0x400,
+            raw_size: 500,
+            entropy: 6.0,
+            readable: true,
+            writable: false,
+            executable: true,
+            is_rwx: false,
+        }],
+        imports: Vec::new(),
+        exports: Vec::new(),
+        rich_header: None,
+        imphash: None,
+        interesting_strings: Vec::new(),
+    };
+
+    let mut report_b = report_a.clone();
+    report_b.file_name = "release_v2.exe".to_string();
+    report_b.file_size = 1200;
+    report_b.overall_entropy = 5.2;
+    // Degrade CFG to test mitigation drift detection
+    report_b.mitigations.cfg = false;
+    // Add a new section
+    report_b.sections.push(SectionInfo {
+        name: ".extra".to_string(),
+        virtual_address: 0x2000,
+        virtual_size: 200,
+        raw_offset: 0x900,
+        raw_size: 200,
+        entropy: 4.5,
+        readable: true,
+        writable: true,
+        executable: false,
+        is_rwx: false,
+    });
+
+    let diff = generate_diff_report(&report_a, &report_b);
+    assert_eq!(diff.size_delta, 200);
+    assert_eq!(diff.file_a, "release_v1.exe");
+    assert_eq!(diff.file_b, "release_v2.exe");
+
+    let cfg_drift = diff
+        .mitigations_drift
+        .iter()
+        .find(|m| m.mitigation.contains("Control Flow Guard"))
+        .unwrap();
+    assert_eq!(cfg_drift.status, "degraded");
+    assert_eq!(cfg_drift.before, true);
+    assert_eq!(cfg_drift.after, false);
+
+    let extra_sec = diff
+        .section_deltas
+        .iter()
+        .find(|s| s.name == ".extra")
+        .unwrap();
+    assert_eq!(extra_sec.action, "added");
+    assert_eq!(extra_sec.size_delta, 200);
+}
+
+#[test]
+fn test_read_cstring_bounded_dos_protection() {
+    use binlens::pe::read_cstring_bounded;
+
+    // A buffer with 5000 'A' bytes without a null terminator
+    let long_buf = vec![b'A'; 5000];
+    // Bounded read with max_len 256 should stop at 256 and return None
+    let res = read_cstring_bounded(&long_buf, 0, 256);
+    assert_eq!(
+        res, None,
+        "Un-terminated cstring must return None and avoid unbounded scan"
+    );
+
+    // A buffer with null terminator at byte 50
+    let mut valid_buf = vec![b'B'; 100];
+    valid_buf[50] = 0;
+    let res_valid = read_cstring_bounded(&valid_buf, 0, 256);
+    let expected_b = "B".repeat(50);
+    assert_eq!(res_valid.as_deref(), Some(expected_b.as_str()));
 }

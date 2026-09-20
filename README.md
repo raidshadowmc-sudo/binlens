@@ -1,30 +1,30 @@
 # binlens
 
-A high-performance, memory-mapped binary inspection, Shannon entropy analyzer, compiler telemetry decoder, and exploit mitigation auditor for Windows Portable Executable (PE) and Linux Executable and Linkable Format (ELF) binaries. Written in pure, safe Rust.
+A memory-mapped binary inspection, Shannon entropy analyzer, compiler telemetry decoder, and exploit mitigation auditor for Windows Portable Executable (PE) and Linux Executable and Linkable Format (ELF) binaries. Written in safe, dependency-light Rust.
 
 ---
 
 ## Overview
 
-`binlens` is a standalone, dependency-free command-line utility built for security engineers, incident responders, malware analysts, and DevSecOps pipelines. It performs static analysis on executable headers, computes continuous block-level entropy distributions, evaluates operating system exploit mitigations, extracts API import/export tables, decodes undocumented compiler telemetry (MSVC Rich Header), and computes standard import hashes without requiring runtime execution, hypervisors, or heavy disassembler frameworks.
+`binlens` is a standalone, single-binary command-line utility built for security engineers, incident responders, malware analysts, and DevSecOps pipelines. It performs static analysis on executable headers, computes continuous block-level entropy distributions, evaluates operating system exploit mitigations, extracts API import/export tables, decodes undocumented compiler telemetry (MSVC Rich Header), and computes standard import hashes without requiring runtime execution, emulators, or heavy disassembler frameworks.
 
-All file parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, guaranteeing zero-copy performance and sub-millisecond execution times even when scanning multi-gigabyte files.
+File parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, avoiding whole-file heap allocations and enabling instant header, checksec, and metadata extraction even on multi-gigabyte files.
 
 ---
 
 ## Why binlens?
 
-Security auditing and binary triage are frequently fragmented across disparate scripts, heavy disassemblers, and platform-dependent tools:
+Security auditing and binary triage are frequently fragmented across disparate scripts and platform-dependent tools:
 
-| Feature / Capability | `binlens` | Python `pefile` / scripts | `checksec.sh` | Heavy Disassemblers (IDA / Ghidra) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Runtime Dependencies** | None (Single static binary) | Python 3 + `pip` packages | Bash, readelf, objdump | JVM, heavy GUI installation |
-| **Cross-Platform Support** | Windows & Linux (PE + ELF) | PE only (ELF requires `pyelftools`) | Linux / ELF only | Windows, Linux, macOS |
-| **Throughput & Speed** | Zero-copy `memmap2` (<1 ms) | Interpreted overhead (~50–200 ms) | Process spawning overhead | Project indexing overhead |
-| **Shannon Entropy Visualizer** | In-terminal heatmap + histogram | Raw float values only | None | Plugin-dependent |
-| **MSVC Rich Header Decoding**| Built-in with VS toolset mapping | Raw tuples / requires custom parser| None | Plugin / script required |
-| **Differential Analysis (`diff`)**| Built-in binary delta engine | Manual script required | None | BinDiff / external tool |
-| **Automated Pipeline Output**| Unified `--json` schema | Custom JSON serializer | Script-dependent JSON | Custom Python export |
+| Feature / Capability | `binlens` | Python `pefile` / scripts | `checksec.sh` |
+| :--- | :--- | :--- | :--- |
+| **Runtime Dependencies** | None (Single static binary) | Python 3 + `pip` packages | Bash, readelf, objdump |
+| **Cross-Platform Support** | Windows & Linux (PE + ELF) | PE only (ELF requires `pyelftools`) | Linux / ELF only |
+| **Throughput & Memory** | Zero-copy `memmap2` (minimal heap) | Interpreted overhead (~50–200 ms) | Process spawning overhead |
+| **Shannon Entropy Visualizer** | In-terminal heatmap + histogram | Raw float values only | None |
+| **MSVC Rich Header Decoding**| Built-in with VS toolset mapping | Raw tuples / requires custom parser| None |
+| **Differential Analysis (`diff`)**| Built-in structured delta engine | Manual script required | None |
+| **Automated Pipeline Output**| Unified `--json` schema | Custom JSON serializer | Script-dependent JSON |
 
 ---
 
@@ -80,7 +80,7 @@ Executing `binlens scan C:\Windows\System32\cmd.exe` provides a comprehensive, u
   │ High Entropy VA        │   PASS    │ 64-bit ASLR address pool expansion  │
   │ DEP / NX               │   PASS    │ Data Execution Prevention / No-Execute │
   │ Control Flow Guard (CFG) │   PASS  │ Indirect call target validation     │
-  │ Authenticode Signature │   FAIL    │ Valid digital certificate table     │
+  │ Authenticode (Embedded) │   FAIL   │ Embedded PKCS#7 table (absent if catalog-signed) │
   │ W^X (No RWX Sections)  │   PASS    │ Prevents writable and executable pages │
   └────────────────────────┴───────────┴─────────────────────────────────────┘
 
@@ -127,27 +127,35 @@ Executing `binlens scan C:\Windows\System32\cmd.exe` provides a comprehensive, u
   [REG] Registry               : SYSTEM\CurrentControlSet\Control\Session Manager\Environment
 ```
 
+> **Note on Authenticode in `cmd.exe`**: Core Windows system binaries are signed via external catalog files (`.cat` in `%SystemRoot%\System32\CatRoot`) rather than embedded PKCS#7 certificate tables inside the PE header. `binlens checksec` inspects the PE Security Directory for embedded certificates; catalog-signed binaries accurately indicate that no embedded certificate structure is present.
+
 ---
 
 ## Practical Workflows & Use Cases
 
 ### 1. Malware Triage & Incident Response (DFIR)
 * **Instant Packing Detection**: Determine whether an unknown sample is packed, encrypted, or compressed by inspecting the Shannon entropy score and block gradient. Payloads with entropy $\ge 7.20$ or sections with `Virtual Size >> Raw Size` indicate runtime unpacking or process hollowing stubs.
-* **API Capability Profiling**: Extract imported APIs to immediately identify process injection primitives (`VirtualAlloc`, `WriteProcessMemory`, `CreateRemoteThread`), anti-debugging checks (`IsDebuggerPresent`, `NtQueryInformationProcess`), and dynamic resolution routines (`GetProcAddress`, `LoadLibraryA`).
+* **API Capability Profiling**: Extract imported APIs to identify process injection primitives (`VirtualAlloc`, `WriteProcessMemory`, `CreateRemoteThread`), anti-debugging checks (`IsDebuggerPresent`, `NtQueryInformationProcess`), and dynamic resolution routines (`GetProcAddress`, `LoadLibraryA`).
 * **Imphash IoC Clustering**: Compute Mandiant-standard Import Hashes (`imphash`) to cluster malware variants belonging to the same actor or campaign, even when payloads are recompiled with altered string tables or code layout.
 
 ### 2. CI/CD Security Gates & DevSecOps
-Enforce binary hardening compliance in your build pipelines. Prevent compilation regressions before artifacts are pushed to staging or production:
+Enforce binary hardening compliance in your build pipelines. Prevent compilation regressions before artifacts are released:
 
 ```bash
-# Example CI/CD gate script (Bash / PowerShell)
+# Verify security mitigations on release binary
 binlens --json checksec ./build/release/app.exe > checksec.json
 
-# Assert ASLR, DEP, and CFG pass without RWX sections
-jq -e '.aslr.status == "Pass" and .dep.status == "Pass" and .rwx_sections.status == "Pass"' checksec.json
+# Assert ASLR, DEP/NX, and CFG pass without RWX sections
+jq -e '.aslr and .dep_nx and .cfg and (.has_rwx_sections | not)' checksec.json
 ```
 
-If a developer introduces a build configuration error (such as dropping `/DYNAMICBASE`, disabling `/NXCOMPAT`, or linking legacy code that marks `.text` as writable), the pipeline immediately halts with a descriptive error.
+```bash
+# Differential regression gate: ensure no mitigations were degraded between builds
+binlens --json diff ./build/baseline/app.exe ./build/release/app.exe > diff.json
+
+# Fail if any mitigation transitioned from enabled to disabled
+jq -e '[.mitigations_drift[] | select(.status == "degraded")] | length == 0' diff.json
+```
 
 ### 3. Software Supply-Chain & Build Telemetry Auditing
 * **MSVC Rich Header Decoding**: Audit third-party Windows binaries and COTS products to reconstruct their compiler build toolset. The decoded Rich Header identifies exact MSVC compiler builds (e.g. Visual Studio 2013 vs 2022), MASM assembler versions, and linker build IDs.
@@ -157,7 +165,7 @@ If a developer introduces a build configuration error (such as dropping `/DYNAMI
 Audit changes between two consecutive software releases (`v1.0.0` vs `v1.0.1`):
 * Detect unexpected section additions or deletions.
 * Identify newly introduced third-party library imports or dangerous system calls.
-* Catch silent security mitigation regressions (e.g. ASLR or SafeSEH dropped during refactoring).
+* Catch silent security mitigation regressions (e.g. ASLR, DEP, or CFG dropped during refactoring).
 
 ---
 
@@ -168,10 +176,12 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
 
 * **Address Space Layout Randomization (ASLR / PIE)**:
   * **PE**: Evaluates `IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE` and 64-bit High-Entropy Virtual Address space (`IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA`).
-  * **ELF**: Evaluates `ET_DYN` object type and dynamic flags (`DF_1_PIE`).
+  * **ELF**: Evaluates `ET_DYN` object type, `PT_INTERP`, and dynamic flags (`DF_1_PIE`).
 * **Data Execution Prevention (DEP / NX)**:
   * **PE**: Verifies `IMAGE_DLLCHARACTERISTICS_NX_COMPAT`.
-  * **ELF**: Verifies `PT_GNU_STACK` segment permissions (strictly defaults to non-executable stack if the segment is omitted).
+  * **ELF**: Evaluates `PT_GNU_STACK` segment permissions. In accordance with Linux kernel loader semantics, if `PT_GNU_STACK` is absent, the stack defaults to executable (`dep_nx = false`).
+* **RELRO (Relocation Read-Only)**:
+  * **ELF**: Inspects `PT_GNU_RELRO` and dynamic tags (`DT_BIND_NOW`, `DF_BIND_NOW`, `DF_1_NOW`) to distinguish **Full RELRO** from **Partial RELRO**.
 * **Control Flow Guard (CFG)**:
   * **PE**: Cross-references `IMAGE_DLLCHARACTERISTICS_GUARD_CF` with `IMAGE_LOAD_CONFIG_DIRECTORY`. Validates registered `GuardCFCheckFunctionPointer` (offset 112 for PE32+, offset 72 for PE32) to prevent flag-only false positives.
 * **Structured Exception Handling (SafeSEH / SEH)**:
@@ -179,13 +189,12 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
   * **PE32+**: Validates `.pdata` table-based exception handling unless explicitly disabled by `IMAGE_DLLCHARACTERISTICS_NO_SEH`.
 * **W^X Enforcement (No RWX Sections)**:
   * Scans section headers for concurrently writable and executable characteristics (`IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE` on PE; `SHF_WRITE | SHF_EXECINSTR` on ELF).
-* **Authenticode Signature Presence**:
+* **Authenticode Presence**:
   * Inspects PE Security Data Directory for `WIN_CERTIFICATE` / PKCS#7 signed data structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`).
 
 ### 2. Shannon Entropy Heatmap & Packing Detection
 * Computes chunked Shannon entropy across configurable intervals (default: 512 bytes).
 * Renders an in-terminal distribution bar alongside an 8-bucket frequency histogram, identifying regions of null padding, structured code, text data, and high-entropy packed or encrypted payloads.
-* Automatically highlights anomalies where section virtual size significantly exceeds raw disk size.
 
 ### 3. MSVC Rich Header Analysis (Compiler Telemetry)
 * Locates and extracts undocumented `@comp.id` records between the DOS stub and NT headers.
@@ -195,19 +204,20 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
 
 ### 4. Header, Import, and Export Inspection
 * Resolves section headers with virtual addresses, raw offsets, sizes, permissions, and section-specific entropy metrics.
-* Resolves Import Address Tables (IAT) across PE and ELF dynamic symbol tables.
+* Resolves Import Address Tables (IAT) across PE and ELF dynamic symbol tables with loop caps against corrupted structures.
 * Computes normalized Import Hash (**Imphash**) compliant with the Mandiant standard, including ordinal import notation (`.ord<number>`).
-* Extracts and indexes exported symbols with ordinal numbers and relative virtual addresses (RVA).
+* Extracts and indexes exported symbols with ordinal numbers and relative virtual addresses (RVA) without artificial 256 truncation.
 
 ### 5. Binary Differential Analysis (`diff`)
 Compares two executable binaries side-by-side:
 * Tracks file size and overall entropy variance.
 * Detects section additions, deletions, and layout modifications.
 * Highlights differences in imported dependencies and symbols.
-* Reports drift in mitigation configurations (e.g., regressions where ASLR or DEP was dropped in a release build).
+* Reports drift in mitigation configurations (`hardened`, `degraded`, `unchanged`).
+* Emits a structured `DiffReport` JSON schema when run with `--json`.
 
 ### 6. String Extraction with Pattern Classification
-* Extracts ASCII and UTF-8 strings from binary images using length thresholding.
+* Extracts ASCII and UTF-16LE strings from binary images using length thresholding.
 * Employs heuristics to detect and classify:
   * IPv4 addresses and network endpoints.
   * HTTP / HTTPS URLs.
@@ -221,11 +231,11 @@ Compares two executable binaries side-by-side:
 
 | Command | Syntax | Description |
 | :--- | :--- | :--- |
-| **`scan`** | `binlens scan <FILE>` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, and indicators. |
+| **`scan`** | `binlens scan <FILE> [-a, --all]` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, and indicators. Use `--all` to dump full symbol tables. |
 | **`checksec`** | `binlens checksec <FILE>` | Security mitigation audit (ASLR, DEP, CFG, SafeSEH, W^X, Authenticode). |
 | **`entropy`** | `binlens entropy <FILE> [--width <N>] [--block-size <BYTES>]` | Computes continuous Shannon entropy distribution and histogram. |
 | **`diff`** | `binlens diff <FILE_A> <FILE_B>` | Compares two binaries for mitigation drift, section changes, and import variances. |
-| **`strings`** | `binlens strings <FILE> [--min-len <N>]` | Extracts strings and highlights classified indicators (APIs, registry, paths, URLs). |
+| **`strings`** | `binlens strings <FILE> [--min-len <N>] [--all]` | Extracts strings and highlights classified indicators (APIs, registry, paths, URLs). |
 | **`--json`** | `binlens --json <SUBCOMMAND> <FILE>` | Emits structured JSON output for CI/CD pipelines and programmatic consumption. |
 
 ---
@@ -233,7 +243,7 @@ Compares two executable binaries side-by-side:
 ## Installation
 
 ### Prerequisites
-* Rust toolchain (version 1.80 or later)
+* Rust toolchain (version 1.85 or later, Edition 2024)
 * Cargo package manager
 
 ### Build from Source
@@ -258,9 +268,9 @@ cargo install --path .
 
 * **Memory-Mapped Processing**: Built on `memmap2` to avoid loading complete file contents into heap memory, keeping memory consumption near zero.
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
-* **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations to guard against malformed headers, integer overflows, and parser exploitation.
-* **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 24 automated unit, regression, and differential tests covering edge cases in RVA resolution, ordinal formatting, Big-Endian ELF structures, Rich Header DoS limits, and Load Config layout variations:
+* **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
+* **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
+* **Automated Test Suite**: Includes 27 automated unit, regression, and differential tests:
   ```bash
   cargo test
   ```

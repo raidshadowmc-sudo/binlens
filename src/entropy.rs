@@ -1,4 +1,4 @@
-﻿use colored::*;
+use colored::*;
 
 pub fn calculate_entropy(data: &[u8]) -> f64 {
     if data.is_empty() {
@@ -23,9 +23,7 @@ pub fn calculate_block_entropy(data: &[u8], block_size: usize) -> Vec<f64> {
     if data.is_empty() || block_size == 0 {
         return vec![];
     }
-    data.chunks(block_size)
-        .map(calculate_entropy)
-        .collect()
+    data.chunks(block_size).map(calculate_entropy).collect()
 }
 
 pub fn entropy_badge(entropy: f64) -> ColoredString {
@@ -48,7 +46,9 @@ pub fn render_entropy_bar(blocks: &[f64], width: usize) -> String {
     let num_samples = width.max(10);
     for i in 0..num_samples {
         let start = (i * blocks.len()) / num_samples;
-        let end = (((i + 1) * blocks.len()) / num_samples).max(start + 1).min(blocks.len());
+        let end = (((i + 1) * blocks.len()) / num_samples)
+            .max(start + 1)
+            .min(blocks.len());
         let slice = &blocks[start..end];
         let avg = if slice.is_empty() {
             0.0
@@ -113,10 +113,7 @@ pub fn render_entropy_histogram(blocks: &[f64]) -> Vec<String> {
         let pct = (count as f64 / blocks.len() as f64) * 100.0;
         lines.push(format!(
             "  {} [{:<24}] {:>5} ({:>5.1}%)",
-            labels[i],
-            colored_bar,
-            count,
-            pct
+            labels[i], colored_bar, count, pct
         ));
     }
     lines

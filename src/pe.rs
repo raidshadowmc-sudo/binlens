@@ -1,5 +1,8 @@
 use crate::entropy::calculate_entropy;
-use crate::types::{BinaryFormat, BinaryReport, ExportInfo, ImportInfo, RichHeaderEntry, RichHeaderInfo, SectionInfo, SecurityMitigations};
+use crate::types::{
+    BinaryFormat, BinaryReport, ExportInfo, ImportInfo, RichHeaderEntry, RichHeaderInfo,
+    SectionInfo, SecurityMitigations,
+};
 use md5::Md5;
 use sha2::{Digest, Sha256};
 
@@ -42,14 +45,23 @@ pub fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
 }
 
 pub fn read_cstring(buf: &[u8], offset: usize) -> Option<String> {
+    read_cstring_bounded(buf, offset, 1024)
+}
+
+pub fn read_cstring_bounded(buf: &[u8], offset: usize, max_len: usize) -> Option<String> {
     if offset >= buf.len() {
         return None;
     }
+    let limit = (offset + max_len).min(buf.len());
     let mut end = offset;
-    while end < buf.len() && buf[end] != 0 {
+    while end < limit && buf[end] != 0 {
         end += 1;
     }
-    String::from_utf8(buf[offset..end].to_vec()).ok()
+    if end < buf.len() && buf[end] == 0 {
+        String::from_utf8(buf[offset..end].to_vec()).ok()
+    } else {
+        None
+    }
 }
 
 pub fn hex_encode(bytes: &[u8]) -> String {
@@ -68,7 +80,11 @@ pub fn rva_to_offset(rva: u32, sections: &[RawSection]) -> Option<usize> {
     if sections.is_empty() {
         return Some(rva as usize);
     }
-    let first_va = sections.iter().map(|s| s.virtual_address).min().unwrap_or(0x1000);
+    let first_va = sections
+        .iter()
+        .map(|s| s.virtual_address)
+        .min()
+        .unwrap_or(0x1000);
     if rva < first_va {
         return Some(rva as usize);
     }
@@ -340,7 +356,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         aslr: (dll_chars & 0x0040) != 0,
         dep_nx: (dll_chars & 0x0100) != 0,
         seh: is_64 && (dll_chars & 0x0400) == 0, // on x64 SEH is table-based in .pdata (unless NO_SEH); on 32-bit requires SafeSEH table in Load Config
-        cfg: false,  // requires both GUARD_CF flag and valid Load Config function pointer
+        cfg: false, // requires both GUARD_CF flag and valid Load Config function pointer
         authenticode_signed: false,
         has_rwx_sections: false,
         pie: (dll_chars & 0x0040) != 0,
@@ -459,7 +475,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     if import_dir_rva > 0 {
         if let Some(mut imp_offset) = rva_to_offset(import_dir_rva, &raw_sections) {
-            while imp_offset + 20 <= data.len() {
+            while imp_offset + 20 <= data.len() && imports.len() < 4096 {
                 let orig_first_thunk = read_u32(data, imp_offset).unwrap_or(0);
                 let name_rva = read_u32(data, imp_offset + 12).unwrap_or(0);
                 let first_thunk = read_u32(data, imp_offset + 16).unwrap_or(0);
@@ -479,7 +495,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
                         if let Some(mut thunk_offset) = rva_to_offset(thunk_rva, &raw_sections) {
                             let step = if is_64 { 8 } else { 4 };
-                            while thunk_offset + step <= data.len() {
+                            while thunk_offset + step <= data.len() && funcs.len() < 65536 {
                                 let val = if is_64 {
                                     read_u64(data, thunk_offset).unwrap_or(0)
                                 } else {
@@ -501,8 +517,11 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                                     (format!("Ordinal#{}", ord), format!("ord{}", ord))
                                 } else {
                                     let func_rva = (val & 0x7FFF_FFFF) as u32;
-                                    if let Some(func_offset) = rva_to_offset(func_rva, &raw_sections) {
-                                        let name = read_cstring(data, func_offset + 2).unwrap_or_else(|| "Unknown".to_string());
+                                    if let Some(func_offset) =
+                                        rva_to_offset(func_rva, &raw_sections)
+                                    {
+                                        let name = read_cstring(data, func_offset + 2)
+                                            .unwrap_or_else(|| "Unknown".to_string());
                                         (name.clone(), name.to_lowercase())
                                     } else {
                                         ("Unknown".to_string(), "unknown".to_string())
@@ -558,13 +577,18 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                     rva_to_offset(addr_ords, &raw_sections),
                     rva_to_offset(addr_funcs, &raw_sections),
                 ) {
-                    for i in 0..num_names.min(256) {
-                        if names_off + (i * 4) + 4 <= data.len() && ords_off + (i * 2) + 2 <= data.len() {
+                    for i in 0..num_names.min(65536) {
+                        if names_off + (i * 4) + 4 <= data.len()
+                            && ords_off + (i * 2) + 2 <= data.len()
+                        {
                             let name_rva = read_u32(data, names_off + (i * 4)).unwrap_or(0);
-                            let ordinal_idx = read_u16(data, ords_off + (i * 2)).unwrap_or(0) as u32;
+                            let ordinal_idx =
+                                read_u16(data, ords_off + (i * 2)).unwrap_or(0) as u32;
                             let ordinal = base + ordinal_idx;
 
-                            let func_rva = if funcs_off + (ordinal_idx as usize * 4) + 4 <= data.len() {
+                            let func_rva = if funcs_off + (ordinal_idx as usize * 4) + 4
+                                <= data.len()
+                            {
                                 read_u32(data, funcs_off + (ordinal_idx as usize * 4)).unwrap_or(0)
                             } else {
                                 0

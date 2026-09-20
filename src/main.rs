@@ -6,9 +6,11 @@ use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(name = "binlens")]
-#[command(author = "ENI & LO <community@github.com>")]
+#[command(author = "raidshadowmc-sudo")]
 #[command(version = "0.1.0")]
-#[command(about = "Modern binary inspector, Shannon entropy visualizer & security mitigations auditor")]
+#[command(
+    about = "Modern binary inspector, Shannon entropy visualizer & security mitigations auditor"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,6 +34,10 @@ enum Commands {
         /// Minimum string length for pattern scanning (default: 4)
         #[arg(short, long, default_value_t = 4)]
         min_string: usize,
+
+        /// Dump all imports and exports (default: truncates long tables to 8 entries)
+        #[arg(short, long)]
+        all: bool,
     },
 
     /// Dedicated entropy visualization with block-by-block ASCII terminal heatmap & histogram
@@ -83,9 +89,12 @@ fn map_or_read_file(path_str: &str) -> Result<(fs::File, Option<memmap2::Mmap>, 
     if !path.exists() {
         return Err(format!("File '{}' not found.", path_str));
     }
-    let file = fs::File::open(path).map_err(|e| format!("Failed to open file '{}': {}", path_str, e))?;
-    let metadata = file.metadata().map_err(|e| format!("Failed to get file metadata: {}", e))?;
-    
+    let file =
+        fs::File::open(path).map_err(|e| format!("Failed to open file '{}': {}", path_str, e))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+
     if metadata.len() == 0 {
         return Ok((file, None, Vec::new()));
     }
@@ -102,11 +111,7 @@ fn map_or_read_file(path_str: &str) -> Result<(fs::File, Option<memmap2::Mmap>, 
 }
 
 fn get_data_slice<'a>(mmap: &'a Option<memmap2::Mmap>, fallback: &'a [u8]) -> &'a [u8] {
-    if let Some(m) = mmap {
-        &m[..]
-    } else {
-        fallback
-    }
+    if let Some(m) = mmap { &m[..] } else { fallback }
 }
 
 fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> types::BinaryReport {
@@ -152,7 +157,12 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Scan { file, block_size, min_string } => {
+        Commands::Scan {
+            file,
+            block_size,
+            min_string,
+            all,
+        } => {
             let (_f, mmap, fallback) = match map_or_read_file(&file) {
                 Ok(res) => res,
                 Err(e) => {
@@ -167,11 +177,15 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
             } else {
                 let blocks = entropy::calculate_block_entropy(data, block_size);
-                printer::print_report(&report, &blocks);
+                printer::print_report(&report, &blocks, all);
             }
         }
 
-        Commands::Entropy { file, block_size, width } => {
+        Commands::Entropy {
+            file,
+            block_size,
+            width,
+        } => {
             let (_f, mmap, fallback) = match map_or_read_file(&file) {
                 Ok(res) => res,
                 Err(e) => {
@@ -197,12 +211,23 @@ fn main() {
                 printer::print_banner();
                 println!("  Target File: {}", file.bold());
                 println!("  File Size:   {} bytes", data.len());
-                println!("  Block Size:  {} bytes ({} sample blocks)", block_size, blocks.len());
-                println!("  Entropy:     {:.4} / 8.000  [{}]\n", overall, entropy::entropy_badge(overall));
+                println!(
+                    "  Block Size:  {} bytes ({} sample blocks)",
+                    block_size,
+                    blocks.len()
+                );
+                println!(
+                    "  Entropy:     {:.4} / 8.000  [{}]\n",
+                    overall,
+                    entropy::entropy_badge(overall)
+                );
 
                 println!("  Entropy Heatmap ({} columns):", width);
                 println!("  [{}]", entropy::render_entropy_bar(&blocks, width));
-                println!("  {:^66}\n", "0% ───────────────────────── 50% ──────────────────────── 100%");
+                println!(
+                    "  {:^66}\n",
+                    "0% ───────────────────────── 50% ──────────────────────── 100%"
+                );
 
                 println!("  Distribution Histogram:");
                 for line in entropy::render_entropy_histogram(&blocks) {
@@ -223,7 +248,10 @@ fn main() {
             let report = analyze_binary_data(data, &file, 4);
 
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&report.mitigations).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report.mitigations).unwrap()
+                );
             } else {
                 printer::print_banner();
                 printer::print_checksec_only(&report);
@@ -252,11 +280,8 @@ fn main() {
             let report_b = analyze_binary_data(data_b, &file_b, 4);
 
             if cli.json {
-                let diff_json = serde_json::json!({
-                    "file_a": report_a,
-                    "file_b": report_b,
-                });
-                println!("{}", serde_json::to_string_pretty(&diff_json).unwrap());
+                let diff_report = diff::generate_diff_report(&report_a, &report_b);
+                println!("{}", serde_json::to_string_pretty(&diff_report).unwrap());
             } else {
                 let diff_lines = diff::compare_binaries(&report_a, &report_b);
                 for line in diff_lines {
@@ -280,7 +305,11 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&categorized).unwrap());
             } else {
                 printer::print_banner();
-                println!("  Extracted Indicators from: {} (min length: {})\n", file.bold(), min_len);
+                println!(
+                    "  Extracted Indicators from: {} (min length: {})\n",
+                    file.bold(),
+                    min_len
+                );
                 if all {
                     let mut current = Vec::new();
                     for &b in data {
@@ -296,14 +325,30 @@ fn main() {
                         }
                     }
                 } else {
-                    println!("  ┌────────────┬─────────────────────────────┬──────────────────────────────────────────┐");
-                    println!("  │ Tag        │ Offset                      │ Value                                    │");
-                    println!("  ├────────────┼─────────────────────────────┼──────────────────────────────────────────┤");
+                    println!(
+                        "  ┌────────────┬─────────────────────────────┬──────────────────────────────────────────┐"
+                    );
+                    println!(
+                        "  │ Tag        │ Offset                      │ Value                                    │"
+                    );
+                    println!(
+                        "  ├────────────┼─────────────────────────────┼──────────────────────────────────────────┤"
+                    );
                     for item in &categorized {
-                        println!("  │ {:<10} │ 0x{:<25X} │ {:<40} │", item.category.cyan(), item.offset, item.value);
+                        println!(
+                            "  │ {:<10} │ 0x{:<25X} │ {:<40} │",
+                            item.category.cyan(),
+                            item.offset,
+                            item.value
+                        );
                     }
-                    println!("  └────────────┴─────────────────────────────┴──────────────────────────────────────────┘");
-                    println!("\n  Found {} tagged indicator(s). Pass --all to dump raw strings.", categorized.len());
+                    println!(
+                        "  └────────────┴─────────────────────────────┴──────────────────────────────────────────┘"
+                    );
+                    println!(
+                        "\n  Found {} tagged indicator(s). Pass --all to dump raw strings.",
+                        categorized.len()
+                    );
                 }
             }
         }
