@@ -335,6 +335,7 @@ fn test_diff_headers_distinguish_identical_basenames() {
         rich_header: None,
         imphash: None,
         interesting_strings: vec![],
+        entry_point_preview: vec![],
     };
     let mut report_b = report_a.clone();
     report_b.file_name = "target/release/app.exe".to_string();
@@ -750,6 +751,7 @@ fn test_structured_diff_report() {
         rich_header: None,
         imphash: None,
         interesting_strings: Vec::new(),
+        entry_point_preview: Vec::new(),
     };
 
     let mut report_b = report_a.clone();
@@ -1017,6 +1019,7 @@ fn test_diff_stack_canary_and_fortify_drift() {
         rich_header: None,
         imphash: None,
         interesting_strings: vec![],
+        entry_point_preview: vec![],
     };
 
     let mut b = a.clone();
@@ -1039,4 +1042,127 @@ fn test_diff_stack_canary_and_fortify_drift() {
         .find(|m| m.mitigation == "Fortified Functions")
         .expect("Must track Fortified Functions drift");
     assert_eq!(fortify_drift.status, "unchanged");
+}
+
+#[test]
+fn test_pe_entry_point_disassembly() {
+    let mut pe = vec![0u8; 2048];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    // AddressOfEntryPoint at opt_hdr + 16 = 0x1000
+    pe[opt_hdr + 16..opt_hdr + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+    // ImageBase at opt_hdr + 24 = 0x140000000
+    pe[opt_hdr + 24..opt_hdr + 32].copy_from_slice(&0x140000000u64.to_le_bytes());
+
+    // Section header: .text at opt_hdr + 240
+    let sec_hdr = opt_hdr + 240;
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".text\0\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtSize = 0x400
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // VirtAddr = 0x1000
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes()); // RawSize = 0x400
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x400u32.to_le_bytes()); // RawOffset = 0x400
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x60000020u32.to_le_bytes()); // Code, Executable, Readable
+
+    // Opcodes at 0x400:
+    // 48 89 5C 24 08       mov [rsp+8], rbx
+    // 48 89 6C 24 10       mov [rsp+10h], rbp
+    // 48 89 74 24 18       mov [rsp+18h], rsi
+    // 57                   push rdi
+    // 48 83 EC 20          sub rsp, 20h
+    // C3                   ret
+    let code = [
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
+        0x57, 0x48, 0x83, 0xEC, 0x20, 0xC3,
+    ];
+    pe[0x400..0x400 + code.len()].copy_from_slice(&code);
+
+    let report = parse_pe(&pe, "test_disasm.exe").expect("Parse PE failed");
+    assert!(
+        !report.entry_point_preview.is_empty(),
+        "Must decode entry point instructions"
+    );
+    assert_eq!(report.entry_point_preview[0].mnemonic, "mov");
+    assert_eq!(report.entry_point_preview[0].address, 0x140001000);
+    assert_eq!(report.entry_point_preview[3].mnemonic, "push");
+    assert_eq!(report.entry_point_preview[4].mnemonic, "sub");
+    assert_eq!(report.entry_point_preview[5].mnemonic, "ret");
+}
+
+#[test]
+fn test_elf_entry_point_disassembly() {
+    let mut elf = vec![0u8; 1024];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 2; // 64-bit
+    elf[5] = 1; // Little endian
+    elf[6] = 1;
+    elf[16] = 2; // ET_EXEC
+    elf[18] = 0x3E; // x86_64
+    elf[20] = 1;
+    elf[24..32].copy_from_slice(&0x401000u64.to_le_bytes()); // e_entry = 0x401000
+    elf[32] = 64; // e_phoff = 64
+    elf[54] = 56; // e_phentsize
+    elf[56] = 1; // e_phnum = 1
+
+    // Program header 0: PT_LOAD at 64
+    let ph0 = 64;
+    elf[ph0..ph0 + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD = 1
+    elf[ph0 + 4..ph0 + 8].copy_from_slice(&5u32.to_le_bytes()); // PF_R | PF_X
+    elf[ph0 + 8..ph0 + 16].copy_from_slice(&0x200u64.to_le_bytes()); // p_offset = 0x200
+    elf[ph0 + 16..ph0 + 24].copy_from_slice(&0x401000u64.to_le_bytes()); // p_vaddr = 0x401000
+    elf[ph0 + 24..ph0 + 32].copy_from_slice(&0x401000u64.to_le_bytes()); // p_paddr = 0x401000
+    elf[ph0 + 32..ph0 + 40].copy_from_slice(&0x100u64.to_le_bytes()); // p_filesz = 0x100
+    elf[ph0 + 40..ph0 + 48].copy_from_slice(&0x100u64.to_le_bytes()); // p_memsz = 0x100
+
+    // Opcodes at offset 0x200 (standard ELF Linux _start entry preamble):
+    // 31 ed             xor ebp, ebp
+    // 49 89 d1          mov r9, rdx
+    // 5e                pop rsi
+    // 48 89 e2          mov rdx, rsp
+    // 48 83 e4 f0       and rsp, -16
+    let code = [
+        0x31, 0xED, 0x49, 0x89, 0xD1, 0x5E, 0x48, 0x89, 0xE2, 0x48, 0x83, 0xE4, 0xF0,
+    ];
+    elf[0x200..0x200 + code.len()].copy_from_slice(&code);
+
+    let report = parse_elf(&elf, "test_elf_disasm.elf").expect("Parse ELF failed");
+    assert!(
+        !report.entry_point_preview.is_empty(),
+        "Must decode ELF entry point instructions"
+    );
+    assert_eq!(report.entry_point_preview[0].mnemonic, "xor");
+    assert_eq!(report.entry_point_preview[0].address, 0x401000);
+    assert_eq!(report.entry_point_preview[1].mnemonic, "mov");
+    assert_eq!(report.entry_point_preview[2].mnemonic, "pop");
+    assert_eq!(report.entry_point_preview[3].mnemonic, "mov");
+    assert_eq!(report.entry_point_preview[4].mnemonic, "and");
+}
+
+#[test]
+fn test_disassemble_raw_bytes_helper() {
+    use binlens::disasm::disassemble_bytes;
+
+    // Test 32-bit x86: push ebp; mov ebp, esp; pop ebp; ret
+    let code_32 = [0x55, 0x89, 0xE5, 0x5D, 0xC3];
+    let insns_32 = disassemble_bytes(&code_32, 0x00401000, 32, 10);
+    assert_eq!(insns_32.len(), 4);
+    assert_eq!(insns_32[0].mnemonic, "push");
+    assert_eq!(insns_32[1].mnemonic, "mov");
+    assert_eq!(insns_32[2].mnemonic, "pop");
+    assert_eq!(insns_32[3].mnemonic, "ret");
+
+    // Test 64-bit x86: nop; int3
+    let code_64 = [0x90, 0xCC];
+    let insns_64 = disassemble_bytes(&code_64, 0x140000000, 64, 10);
+    assert_eq!(insns_64.len(), 2);
+    assert_eq!(insns_64[0].mnemonic, "nop");
+    assert_eq!(insns_64[1].mnemonic, "int3");
 }

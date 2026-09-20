@@ -150,12 +150,29 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let mut has_interp = false;
     let mut dynamic_offset: Option<usize> = None;
     let mut dynamic_size: usize = 0;
+    let mut load_segments = Vec::new();
 
     for i in 0..phnum {
         let off = phoff + (i * phentsize);
         if off + phentsize <= data.len() {
             let p_type = read_u32(data, off, be).unwrap_or(0);
-            if p_type == 3 {
+            if p_type == 1 {
+                // PT_LOAD
+                let (vaddr, offset, filesz) = if is_64 {
+                    (
+                        read_u64(data, off + 16, be).unwrap_or(0),
+                        read_u64(data, off + 8, be).unwrap_or(0) as usize,
+                        read_u64(data, off + 32, be).unwrap_or(0) as usize,
+                    )
+                } else {
+                    (
+                        read_u32(data, off + 8, be).unwrap_or(0) as u64,
+                        read_u32(data, off + 4, be).unwrap_or(0) as usize,
+                        read_u32(data, off + 16, be).unwrap_or(0) as usize,
+                    )
+                };
+                load_segments.push((vaddr, offset, filesz));
+            } else if p_type == 3 {
                 // PT_INTERP
                 has_interp = true;
             } else if p_type == 0x6474e551 {
@@ -527,6 +544,15 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     let overall_entropy = calculate_entropy(data);
 
+    let entry_point_preview = crate::disasm::disassemble_elf_entry_point(
+        data,
+        entry_point,
+        is_64,
+        arch_str,
+        &load_segments,
+        16,
+    );
+
     Some(BinaryReport {
         file_name: file_name.to_string(),
         file_size: data.len() as u64,
@@ -563,5 +589,6 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         rich_header: None,
         imphash: None,
         interesting_strings: Vec::new(),
+        entry_point_preview,
     })
 }

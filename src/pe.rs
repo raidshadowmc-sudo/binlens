@@ -320,14 +320,16 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     let entry_point_rva = read_u32(data, opt_hdr_offset + 16)? as u64;
 
-    let (subsystem_val, dll_chars, data_dirs_offset) = if is_64 {
+    let (image_base, subsystem_val, dll_chars, data_dirs_offset) = if is_64 {
+        let base = read_u64(data, opt_hdr_offset + 24).unwrap_or(0x140000000);
         let sub = read_u16(data, opt_hdr_offset + 68)?;
         let dll = read_u16(data, opt_hdr_offset + 70)?;
-        (sub, dll, opt_hdr_offset + 112)
+        (base, sub, dll, opt_hdr_offset + 112)
     } else {
+        let base = read_u32(data, opt_hdr_offset + 28).unwrap_or(0x400000) as u64;
         let sub = read_u16(data, opt_hdr_offset + 68)?;
         let dll = read_u16(data, opt_hdr_offset + 70)?;
-        (sub, dll, opt_hdr_offset + 96)
+        (base, sub, dll, opt_hdr_offset + 96)
     };
 
     let arch_str = match machine {
@@ -639,6 +641,15 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let overall_entropy = calculate_entropy(data);
     let is_likely_packed = overall_entropy >= 7.2;
 
+    let entry_point_preview = crate::disasm::disassemble_pe_entry_point(
+        data,
+        entry_point_rva as u32,
+        image_base,
+        is_64,
+        &raw_sections,
+        16,
+    );
+
     Some(BinaryReport {
         file_name: file_name.to_string(),
         file_size: data.len() as u64,
@@ -661,5 +672,6 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         rich_header,
         imphash,
         interesting_strings: Vec::new(),
+        entry_point_preview,
     })
 }

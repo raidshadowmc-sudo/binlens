@@ -241,7 +241,21 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64], show_all: bool) {
         println!("  └──────────────────────┴─────────────┴───────────┴─────────────────────────┘");
     }
 
-    // 7. Interesting Indicators & Strings
+    // 8. Entry Point Disassembly Preview
+    if !report.entry_point_preview.is_empty() {
+        println!(
+            "\n{}",
+            "─── [ ENTRY POINT DISASSEMBLY PREVIEW ] ─────────────────────────────────────".bold()
+        );
+        println!(
+            "  Entry Point: 0x{:X} ({} instructions decoded)",
+            report.entry_point,
+            report.entry_point_preview.len()
+        );
+        print_disassembly_table(&report.entry_point_preview);
+    }
+
+    // 9. Interesting Indicators & Strings
     if !report.interesting_strings.is_empty() {
         println!(
             "\n{}",
@@ -269,6 +283,39 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64], show_all: bool) {
     println!(
         "\n{}",
         "════════════════════════════════════════════════════════════════════════════════".cyan()
+    );
+}
+
+pub fn print_disassembly_table(entries: &[crate::types::DisassemblyEntry]) {
+    println!(
+        "  ┌────────────────────┬─────────────────────────┬────────┬──────────────────────────┐"
+    );
+    println!(
+        "  │ Virtual Address    │ Opcode Bytes            │ Mnem   │ Operands                 │"
+    );
+    println!(
+        "  ├────────────────────┼─────────────────────────┼────────┼──────────────────────────┤"
+    );
+    for insn in entries {
+        let op_fmt = if insn.op_str.len() > 24 {
+            format!("{}...", &insn.op_str[..21])
+        } else {
+            insn.op_str.clone()
+        };
+        let mnem_colored = match insn.mnemonic.as_str() {
+            "jmp" | "call" | "ret" => insn.mnemonic.yellow().bold(),
+            "push" | "pop" | "mov" | "lea" => insn.mnemonic.cyan(),
+            "xor" | "sub" | "add" | "cmp" | "test" => insn.mnemonic.green(),
+            "nop" | "int3" => insn.mnemonic.normal().dimmed(),
+            _ => insn.mnemonic.normal(),
+        };
+        println!(
+            "  │ 0x{:<16X} │ {:<23} │ {:<6} │ {:<24} │",
+            insn.address, insn.bytes, mnem_colored, op_fmt
+        );
+    }
+    println!(
+        "  └────────────────────┴─────────────────────────┴────────┴──────────────────────────┘"
     );
 }
 
@@ -370,4 +417,21 @@ pub fn print_checksec_only(report: &BinaryReport) {
         format!("Checksec Audit for: {}", report.file_name).bold()
     );
     print_checksec_table(report);
+}
+
+pub fn print_disasm_only(report: &BinaryReport) {
+    println!(
+        "\n{}",
+        format!("Entry Point Disassembly for: {}", report.file_name).bold()
+    );
+    println!(
+        "  Target Architecture: {} | Entry Point: 0x{:X}",
+        report.architecture.cyan(),
+        report.entry_point
+    );
+    if report.entry_point_preview.is_empty() {
+        println!("  (No instructions decoded at entry point or unsupported architecture)");
+    } else {
+        print_disassembly_table(&report.entry_point_preview);
+    }
 }

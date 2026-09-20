@@ -232,14 +232,21 @@ Compares two executable binaries side-by-side:
   * Filesystem paths (`C:\...`, `/etc/...`).
   * High-risk system APIs and command execution strings (`cmd.exe`, `powershell.exe`, `VirtualAlloc`).
 
+### 7. Entry Point Disassembly Preview (`disasm`)
+* Built on `iced-x86` for robust, high-performance x86 and x86_64 instruction decoding.
+* Automatically resolves the binary's Entry Point address to raw file offset across both PE (RVA $\to$ Section Raw Data) and ELF (VMA $\to$ PT_LOAD segment).
+* Decodes the initial basic-block execution preamble, formatting addresses, opcode byte streams, and disassembly mnemonics.
+* Assists reverse engineers in immediately identifying compiler calling conventions, function frames, packing stubs (`call $+5; pop reg`), and hook trampolines (`jmp`).
+
 ---
 
 ## Command Reference
 
 | Command | Syntax | Description |
 | :--- | :--- | :--- |
-| **`scan`** | `binlens scan <FILE> [-a, --all]` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, and indicators. Use `--all` to dump full symbol tables. |
-| **`checksec`** | `binlens checksec <FILE>` | Security mitigation audit (ASLR, DEP, CFG, SafeSEH, W^X, Authenticode). |
+| **`scan`** | `binlens scan <FILE> [-a, --all]` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, entry point disassembly, and indicators. Use `--all` to dump full symbol tables. |
+| **`disasm`** | `binlens disasm <FILE> [--count <N>]` | Decodes Entry Point instructions for immediate preamble, unpacker, or hook triage (default: 16 instructions). |
+| **`checksec`** | `binlens checksec <FILE>` | Security mitigation audit (ASLR, DEP, CFG, SafeSEH, W^X, Authenticode, Stack Canary, FORTIFY, RPATH). |
 | **`entropy`** | `binlens entropy <FILE> [--width <N>] [--block-size <BYTES>]` | Computes continuous Shannon entropy distribution and histogram. |
 | **`diff`** | `binlens diff <FILE_A> <FILE_B>` | Compares two binaries for mitigation drift, section changes, and import variances. |
 | **`strings`** | `binlens strings <FILE> [--min-len <N>] [--all]` | Extracts strings and highlights classified indicators (APIs, registry, paths, URLs). |
@@ -277,7 +284,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 31 automated unit, regression, and differential tests:
+* **Automated Test Suite**: Includes 34 automated unit, regression, and differential tests:
   ```bash
   cargo test
   ```
@@ -288,10 +295,10 @@ cargo install --path .
 
 - [x] MSVC Rich Header Analysis: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
 - [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
+- [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 - [ ] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
 - [ ] Cryptographic Authenticode Validation: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
 - [ ] YARA Rule Integration: Native rule compilation and matching against mapped binary memory.
-- [ ] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 
 ---
 

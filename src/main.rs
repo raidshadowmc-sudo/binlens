@@ -82,6 +82,16 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
     },
+
+    /// Disassemble Entry Point instructions for preamble analysis and packer/hook detection
+    Disasm {
+        /// Target binary file path
+        file: String,
+
+        /// Number of instructions to disassemble (default: 16)
+        #[arg(short, long, default_value_t = 16)]
+        count: usize,
+    },
 }
 
 fn map_or_read_file(path_str: &str) -> Result<(fs::File, Option<memmap2::Mmap>, Vec<u8>), String> {
@@ -146,6 +156,7 @@ fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> t
             rich_header: None,
             imphash: None,
             interesting_strings: Vec::new(),
+            entry_point_preview: Vec::new(),
         }
     };
 
@@ -350,6 +361,32 @@ fn main() {
                         categorized.len()
                     );
                 }
+            }
+        }
+
+        Commands::Disasm { file, count } => {
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            };
+            let data = get_data_slice(&mmap, &fallback);
+            let mut report = analyze_binary_data(data, &file, 4);
+
+            if count < report.entry_point_preview.len() {
+                report.entry_point_preview.truncate(count);
+            }
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report.entry_point_preview).unwrap()
+                );
+            } else {
+                printer::print_banner();
+                printer::print_disasm_only(&report);
             }
         }
     }

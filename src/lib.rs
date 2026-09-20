@@ -1,4 +1,5 @@
-﻿pub mod diff;
+pub mod diff;
+pub mod disasm;
 pub mod elf;
 pub mod entropy;
 pub mod pe;

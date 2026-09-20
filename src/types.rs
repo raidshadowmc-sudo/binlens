@@ -92,6 +92,14 @@ pub struct CategorizedString {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisassemblyEntry {
+    pub address: u64,
+    pub bytes: String,
+    pub mnemonic: String,
+    pub op_str: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryReport {
     pub file_name: String,
     pub file_size: u64,
@@ -110,6 +118,7 @@ pub struct BinaryReport {
     pub rich_header: Option<RichHeaderInfo>,
     pub imphash: Option<String>,
     pub interesting_strings: Vec<CategorizedString>,
+    pub entry_point_preview: Vec<DisassemblyEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
