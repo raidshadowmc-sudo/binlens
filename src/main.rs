@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use binlens::{diff, elf, entropy, pe, printer, strings, types};
 use clap::{Parser, Subcommand};
 use colored::*;

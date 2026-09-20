@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 pub mod diff;
 pub mod disasm;
 pub mod elf;

@@ -153,7 +153,7 @@ pub fn compare_binaries(a: &BinaryReport, b: &BinaryReport) -> Vec<String> {
 
     // Basic Metrics Diff
     out.push(
-        format!("  {:20} | {:<25} | {:<25}", "METRIC", &name_a, &name_b)
+        format!("  {:20} | {:<25} | {:<25}", "METRIC", name_a, name_b)
             .bold()
             .to_string(),
     );
@@ -186,7 +186,9 @@ pub fn compare_binaries(a: &BinaryReport, b: &BinaryReport) -> Vec<String> {
 
     out.push(format!(
         "  {:20} | {:<25} | {:<25}",
-        "Architecture", &a.architecture, &b.architecture
+        "Architecture",
+        a.architecture.as_str(),
+        b.architecture.as_str()
     ));
 
     let ent_diff = b.overall_entropy - a.overall_entropy;

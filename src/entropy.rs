@@ -96,11 +96,7 @@ pub fn render_entropy_histogram(blocks: &[f64]) -> Vec<String> {
 
     let mut lines = Vec::new();
     for (i, &count) in bins.iter().enumerate() {
-        let bar_len = if max_count > 0 {
-            (count * bar_max) / max_count
-        } else {
-            0
-        };
+        let bar_len = (count * bar_max).checked_div(max_count).unwrap_or(0);
         let bar_str = "█".repeat(bar_len);
         let colored_bar = match i {
             0..=1 => bar_str.blue(),
