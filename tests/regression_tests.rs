@@ -62,8 +62,8 @@ fn test_elf_nx_default_when_no_pt_gnu_stack() {
     elf[64..68].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
 
     let report = parse_elf(&elf, "test_no_nx.elf").expect("Failed to parse minimal ELF");
-    assert_eq!(
-        report.mitigations.dep_nx, false,
+    assert!(
+        !report.mitigations.dep_nx,
         "ELF without PT_GNU_STACK must NOT report NX as enabled (Linux kernel defaults to executable stack!)"
     );
 }
@@ -365,8 +365,8 @@ fn test_cfg_false_positive_without_load_config() {
     // Data Directory 10 (Load Config) is at opt_hdr + 112 + (10 * 8) = opt_hdr + 192 -> leaves as 0!
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_fake.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.cfg, false,
+    assert!(
+        !report.mitigations.cfg,
         "CFG must be false if Load Config is missing even if GUARD_CF flag is set"
     );
 }
@@ -389,8 +389,8 @@ fn test_safeseh_false_positive_without_load_config() {
     // Load Config Directory (index 10) is 0
 
     let report = binlens::pe::parse_pe(&pe, "test_safeseh_fake.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.seh, false,
+    assert!(
+        !report.mitigations.seh,
         "SafeSEH must be false if Load Config is missing in 32-bit PE"
     );
 }
@@ -437,8 +437,8 @@ fn test_cfg_x64_offset_cookie_vs_guard_check() {
     pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_cookie.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.cfg, false,
+    assert!(
+        !report.mitigations.cfg,
         "CFG must be FALSE when GuardCFCheckFunctionPointer (offset 112) is 0, even if SecurityCookie (offset 88) is non-zero"
     );
 }
@@ -482,8 +482,8 @@ fn test_cfg_x64_valid_guard_check_passes() {
     pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_valid.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.cfg, true,
+    assert!(
+        report.mitigations.cfg,
         "CFG must be TRUE when GuardCFCheckFunctionPointer is non-zero"
     );
 }
@@ -526,8 +526,8 @@ fn test_cfg_x64_truncated_load_config_fails() {
     pe[lc_offset + 112..lc_offset + 120].copy_from_slice(&0x0000_0001_4000_1000_u64.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_cfg_trunc.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.cfg, false,
+    assert!(
+        !report.mitigations.cfg,
         "CFG must be FALSE when Load Config size < 120"
     );
 }
@@ -550,8 +550,8 @@ fn test_seh_x64_no_seh_flag() {
     pe[opt_hdr + 70..opt_hdr + 72].copy_from_slice(&0x0400u16.to_le_bytes());
 
     let report = binlens::pe::parse_pe(&pe, "test_no_seh.exe").expect("Parse failed");
-    assert_eq!(
-        report.mitigations.seh, false,
+    assert!(
+        !report.mitigations.seh,
         "SEH must be false on x64 if NO_SEH flag is set"
     );
 }
@@ -577,9 +577,9 @@ fn test_pe_rich_header_parsing() {
     // Place DanS at 0x80
     let dans_off = 0x80;
     pe[dans_off..dans_off + 4].copy_from_slice(&(dans_magic ^ xor_key).to_le_bytes());
-    pe[dans_off + 4..dans_off + 8].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
-    pe[dans_off + 8..dans_off + 12].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
-    pe[dans_off + 12..dans_off + 16].copy_from_slice(&(0 ^ xor_key).to_le_bytes());
+    pe[dans_off + 4..dans_off + 8].copy_from_slice(&xor_key.to_le_bytes());
+    pe[dans_off + 8..dans_off + 12].copy_from_slice(&xor_key.to_le_bytes());
+    pe[dans_off + 12..dans_off + 16].copy_from_slice(&xor_key.to_le_bytes());
 
     // Entry 1: Utc1930_C (prod_id 0x0101), build 33145, count 42
     let comp_id_1: u32 = (0x0101 << 16) | 33145;
@@ -676,8 +676,8 @@ fn test_elf_relro_full_vs_partial_vs_none() {
         rep_full.mitigations.relro, "Full",
         "PT_GNU_RELRO + DT_BIND_NOW must be Full RELRO"
     );
-    assert_eq!(
-        rep_full.mitigations.high_entropy_va, false,
+    assert!(
+        !rep_full.mitigations.high_entropy_va,
         "ELF must not report High Entropy VA (PE-specific)"
     );
 
@@ -728,6 +728,10 @@ fn test_structured_diff_report() {
             has_rwx_sections: false,
             pie: false,
             relro: "None".to_string(),
+            stack_canary: false,
+            fortify: false,
+            rpath: None,
+            runpath: None,
         },
         sections: vec![SectionInfo {
             name: ".text".to_string(),
@@ -779,8 +783,8 @@ fn test_structured_diff_report() {
         .find(|m| m.mitigation.contains("Control Flow Guard"))
         .unwrap();
     assert_eq!(cfg_drift.status, "degraded");
-    assert_eq!(cfg_drift.before, true);
-    assert_eq!(cfg_drift.after, false);
+    assert!(cfg_drift.before);
+    assert!(!cfg_drift.after);
 
     let extra_sec = diff
         .section_deltas
@@ -810,4 +814,229 @@ fn test_read_cstring_bounded_dos_protection() {
     let res_valid = read_cstring_bounded(&valid_buf, 0, 256);
     let expected_b = "B".repeat(50);
     assert_eq!(res_valid.as_deref(), Some(expected_b.as_str()));
+}
+
+#[test]
+fn test_elf_stack_canary_and_fortify_detection() {
+    let mut elf = vec![0u8; 1024];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 2; // 64-bit
+    elf[5] = 1; // Little endian
+    elf[6] = 1;
+    elf[16] = 3; // ET_DYN
+    elf[18] = 0x3E; // x86_64
+    elf[20] = 1;
+    elf[32] = 64; // e_phoff = 64
+    elf[54] = 56; // e_phentsize
+    elf[56] = 1; // e_phnum = 1 (PT_DYNAMIC)
+
+    // PT_DYNAMIC at offset 64
+    let ph_off = 64;
+    elf[ph_off..ph_off + 4].copy_from_slice(&2u32.to_le_bytes()); // p_type = PT_DYNAMIC (2)
+    elf[ph_off + 8..ph_off + 16].copy_from_slice(&200u64.to_le_bytes()); // p_offset = 200
+    elf[ph_off + 32..ph_off + 40].copy_from_slice(&32u64.to_le_bytes()); // p_filesz = 32
+
+    // Dynamic section at 200: DT_NULL
+    elf[200..208].copy_from_slice(&0u64.to_le_bytes());
+
+    // Section headers at 800: [0] null, [1] .dynstr at 400, [2] .dynsym at 600
+    let sh_off = 800;
+    elf[40] = (sh_off & 0xFF) as u8;
+    elf[41] = ((sh_off >> 8) & 0xFF) as u8;
+    elf[58] = 64; // e_shentsize = 64
+    elf[60] = 3; // e_shnum = 3
+
+    // Section 1: .dynstr at offset 400
+    let s1 = sh_off + 64;
+    elf[s1 + 4..s1 + 8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB = 3
+    elf[s1 + 24..s1 + 32].copy_from_slice(&400u64.to_le_bytes());
+    elf[s1 + 32..s1 + 40].copy_from_slice(&100u64.to_le_bytes());
+
+    // Section 2: .dynsym at offset 600
+    let s2 = sh_off + 128;
+    elf[s2 + 4..s2 + 8].copy_from_slice(&11u32.to_le_bytes()); // SHT_DYNSYM = 11
+    elf[s2 + 24..s2 + 32].copy_from_slice(&600u64.to_le_bytes());
+    elf[s2 + 32..s2 + 40].copy_from_slice(&72u64.to_le_bytes()); // 3 symbols * 24 bytes = 72
+    elf[s2 + 40..s2 + 44].copy_from_slice(&1u32.to_le_bytes()); // sh_link = 1 (.dynstr)
+    elf[s2 + 56..s2 + 64].copy_from_slice(&24u64.to_le_bytes()); // sh_entsize = 24
+
+    // String table at 400: "\0__stack_chk_fail\0__printf_chk\0"
+    let s_canary = b"__stack_chk_fail\0";
+    let s_fortify = b"__printf_chk\0";
+    let off_canary = 1usize;
+    let off_fortify = off_canary + s_canary.len();
+    elf[400 + off_canary..400 + off_canary + s_canary.len()].copy_from_slice(s_canary);
+    elf[400 + off_fortify..400 + off_fortify + s_fortify.len()].copy_from_slice(s_fortify);
+
+    // Symbol 1: __stack_chk_fail (undefined import) at 600 + 24 = 624
+    elf[624..628].copy_from_slice(&(off_canary as u32).to_le_bytes());
+    elf[628] = 0x12; // STB_GLOBAL, STT_FUNC
+    elf[630..632].copy_from_slice(&0u16.to_le_bytes()); // SHN_UNDEF
+
+    // Symbol 2: __printf_chk (undefined import) at 600 + 48 = 648
+    elf[648..652].copy_from_slice(&(off_fortify as u32).to_le_bytes());
+    elf[652] = 0x12;
+    elf[653] = 0;
+    elf[654..656].copy_from_slice(&0u16.to_le_bytes()); // SHN_UNDEF
+
+    let report = parse_elf(&elf, "test_canary.elf").expect("Failed to parse ELF");
+    assert!(
+        report.mitigations.stack_canary,
+        "__stack_chk_fail must set stack_canary = true"
+    );
+    assert!(
+        report.mitigations.fortify,
+        "__printf_chk must set fortify = true"
+    );
+}
+
+#[test]
+fn test_elf_rpath_and_runpath_detection() {
+    let mut elf = vec![0u8; 1024];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 2; // 64-bit
+    elf[5] = 1; // Little endian
+    elf[6] = 1;
+    elf[16] = 3; // ET_DYN
+    elf[18] = 0x3E; // x86_64
+    elf[20] = 1;
+    elf[32] = 64; // e_phoff = 64
+    elf[54] = 56;
+    elf[56] = 1;
+
+    // PT_DYNAMIC at 64
+    let ph_off = 64;
+    elf[ph_off..ph_off + 4].copy_from_slice(&2u32.to_le_bytes());
+    elf[ph_off + 8..ph_off + 16].copy_from_slice(&200u64.to_le_bytes()); // p_offset = 200
+    elf[ph_off + 32..ph_off + 40].copy_from_slice(&64u64.to_le_bytes()); // p_filesz = 64
+
+    // Section headers at 800: [0] null, [1] .dynstr at 400
+    let sh_off = 800;
+    elf[40] = (sh_off & 0xFF) as u8;
+    elf[41] = ((sh_off >> 8) & 0xFF) as u8;
+    elf[58] = 64;
+    elf[60] = 2; // 2 sections
+
+    // Section 1: .dynstr at 400
+    let s1 = sh_off + 64;
+    elf[s1 + 4..s1 + 8].copy_from_slice(&3u32.to_le_bytes());
+    elf[s1 + 24..s1 + 32].copy_from_slice(&400u64.to_le_bytes());
+    elf[s1 + 32..s1 + 40].copy_from_slice(&100u64.to_le_bytes());
+
+    // Strings at 400: "\0/opt/lib\0$ORIGIN/../lib\0"
+    let rpath_str = b"/opt/lib\0";
+    let runpath_str = b"$ORIGIN/../lib\0";
+    let off_rpath = 1usize;
+    let off_runpath = off_rpath + rpath_str.len();
+    elf[400 + off_rpath..400 + off_rpath + rpath_str.len()].copy_from_slice(rpath_str);
+    elf[400 + off_runpath..400 + off_runpath + runpath_str.len()].copy_from_slice(runpath_str);
+
+    // Dynamic section at 200:
+    // Entry 0: DT_STRTAB (5), val = 400
+    elf[200..208].copy_from_slice(&5u64.to_le_bytes());
+    elf[208..216].copy_from_slice(&400u64.to_le_bytes());
+    // Entry 1: DT_RPATH (15), val = off_rpath
+    elf[216..224].copy_from_slice(&15u64.to_le_bytes());
+    elf[224..232].copy_from_slice(&(off_rpath as u64).to_le_bytes());
+    // Entry 2: DT_RUNPATH (29), val = off_runpath
+    elf[232..240].copy_from_slice(&29u64.to_le_bytes());
+    elf[240..248].copy_from_slice(&(off_runpath as u64).to_le_bytes());
+    // Entry 3: DT_NULL (0)
+    elf[248..256].copy_from_slice(&0u64.to_le_bytes());
+
+    let report = parse_elf(&elf, "test_paths.elf").expect("Failed to parse ELF");
+    assert_eq!(report.mitigations.rpath, Some("/opt/lib".to_string()));
+    assert_eq!(
+        report.mitigations.runpath,
+        Some("$ORIGIN/../lib".to_string())
+    );
+}
+
+#[test]
+fn test_pe_stack_cookie_detection() {
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe[nt..nt + 4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe[file_hdr + 2..file_hdr + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    pe[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    // Load Config Directory entry is Data Directory 10 at opt_hdr + 112 + (10 * 8) = opt_hdr + 192
+    let lc_entry = opt_hdr + 192;
+    pe[lc_entry..lc_entry + 4].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[lc_entry + 4..lc_entry + 8].copy_from_slice(&128u32.to_le_bytes()); // Size = 128
+
+    // Section header: .rdata at offset opt_hdr + 240
+    let sec_hdr = opt_hdr + 240;
+    pe[sec_hdr..sec_hdr + 8].copy_from_slice(b".rdata\0\0");
+    pe[sec_hdr + 8..sec_hdr + 12].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 12..sec_hdr + 16].copy_from_slice(&0x200u32.to_le_bytes()); // RVA 0x200
+    pe[sec_hdr + 16..sec_hdr + 20].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[sec_hdr + 20..sec_hdr + 24].copy_from_slice(&0x200u32.to_le_bytes()); // RawOffset = 0x200
+    pe[sec_hdr + 36..sec_hdr + 40].copy_from_slice(&0x40000040u32.to_le_bytes());
+
+    // Load Config at offset 0x200 (RVA 0x200)
+    let lc = 0x200;
+    pe[lc..lc + 4].copy_from_slice(&128u32.to_le_bytes()); // Size = 128
+    // In 64-bit load config, SecurityCookie is at offset 88
+    pe[lc + 88..lc + 96].copy_from_slice(&0x00007FF7_12345678u64.to_le_bytes());
+
+    let report = parse_pe(&pe, "test_cookie.exe").expect("Failed to parse PE with Load Config");
+    assert!(
+        report.mitigations.stack_canary,
+        "Valid SecurityCookie pointer in Load Config must set stack_canary = true"
+    );
+}
+
+#[test]
+fn test_diff_stack_canary_and_fortify_drift() {
+    let a = BinaryReport {
+        file_name: "app_v1".to_string(),
+        file_size: 1000,
+        md5: "aaa".to_string(),
+        sha256: "aaa256".to_string(),
+        format: BinaryFormat::ELF64,
+        architecture: "x86_64".to_string(),
+        subsystem: "Linux".to_string(),
+        entry_point: 0x1000,
+        overall_entropy: 5.0,
+        is_likely_packed: false,
+        mitigations: SecurityMitigations {
+            stack_canary: true,
+            fortify: true,
+            ..Default::default()
+        },
+        sections: vec![],
+        imports: vec![],
+        exports: vec![],
+        rich_header: None,
+        imphash: None,
+        interesting_strings: vec![],
+    };
+
+    let mut b = a.clone();
+    b.file_name = "app_v2".to_string();
+    b.mitigations.stack_canary = false; // Degraded!
+
+    let diff = binlens::diff::generate_diff_report(&a, &b);
+    let canary_drift = diff
+        .mitigations_drift
+        .iter()
+        .find(|m| m.mitigation == "Stack Canary")
+        .expect("Must track Stack Canary drift");
+    assert_eq!(canary_drift.status, "degraded");
+    assert!(canary_drift.before);
+    assert!(!canary_drift.after);
+
+    let fortify_drift = diff
+        .mitigations_drift
+        .iter()
+        .find(|m| m.mitigation == "Fortified Functions")
+        .expect("Must track Fortified Functions drift");
+    assert_eq!(fortify_drift.status, "unchanged");
 }

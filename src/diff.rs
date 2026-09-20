@@ -11,6 +11,16 @@ pub fn generate_diff_report(a: &BinaryReport, b: &BinaryReport) -> DiffReport {
     let checks = [
         ("ASLR", a.mitigations.aslr, b.mitigations.aslr),
         ("DEP / NX", a.mitigations.dep_nx, b.mitigations.dep_nx),
+        (
+            "Stack Canary",
+            a.mitigations.stack_canary,
+            b.mitigations.stack_canary,
+        ),
+        (
+            "Fortified Functions",
+            a.mitigations.fortify,
+            b.mitigations.fortify,
+        ),
         ("Control Flow Guard", a.mitigations.cfg, b.mitigations.cfg),
         (
             "Authenticode Signed",
@@ -228,6 +238,18 @@ pub fn compare_binaries(a: &BinaryReport, b: &BinaryReport) -> Vec<String> {
         "DEP / NX",
         a.mitigations.dep_nx,
         b.mitigations.dep_nx,
+    );
+    diff_bool(
+        &mut out,
+        "Stack Canary",
+        a.mitigations.stack_canary,
+        b.mitigations.stack_canary,
+    );
+    diff_bool(
+        &mut out,
+        "Fortified Functions",
+        a.mitigations.fortify,
+        b.mitigations.fortify,
     );
     diff_bool(
         &mut out,

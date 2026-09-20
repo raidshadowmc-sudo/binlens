@@ -20,6 +20,8 @@ jobs:
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -31,8 +33,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install pefile
 
-    - name: Cargo Check
-      run: cargo check --verbose
+    - name: Check Formatting
+      run: cargo fmt -- --check
+
+    - name: Clippy Linter
+      run: cargo clippy --all-targets -- -D warnings
 
     - name: Cargo Test
       run: cargo test --verbose

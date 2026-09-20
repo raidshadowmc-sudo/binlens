@@ -350,7 +350,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         _ => "Unknown",
     };
 
-    // CFG and SafeSEH start as false and require verification from IMAGE_LOAD_CONFIG_DIRECTORY
+    // CFG, SafeSEH, and Stack Cookie (/GS) start as false and require verification from IMAGE_LOAD_CONFIG_DIRECTORY
     let mut mitigations = SecurityMitigations {
         high_entropy_va: is_64 && (dll_chars & 0x0020) != 0,
         aslr: (dll_chars & 0x0040) != 0,
@@ -361,6 +361,10 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         has_rwx_sections: false,
         pie: (dll_chars & 0x0040) != 0,
         relro: "N/A (Windows)".to_string(),
+        stack_canary: false,
+        fortify: false,
+        rpath: None,
+        runpath: None,
     };
 
     let export_dir_rva = read_u32(data, data_dirs_offset).unwrap_or(0);
@@ -436,13 +440,20 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         });
     }
 
-    // Verify SafeSEH and CFG from IMAGE_LOAD_CONFIG_DIRECTORY
+    // Verify SafeSEH, CFG, and Stack Cookie (/GS) from IMAGE_LOAD_CONFIG_DIRECTORY
     if load_config_rva > 0 {
         if let Some(lc_offset) = rva_to_offset(load_config_rva, &raw_sections) {
             let lc_size = read_u32(data, lc_offset).unwrap_or(0) as usize;
             if is_64 {
-                // In 64-bit load config: GuardCFCheckFunctionPointer is at offset 112 (size >= 120)
-                // (offset 88 is SecurityCookie, offset 96 is SEHandlerTable, offset 104 is SEHandlerCount)
+                // In 64-bit load config:
+                // SecurityCookie is at offset 88 (size >= 96)
+                if lc_size >= 96 && lc_offset + 96 <= data.len() {
+                    let cookie = read_u64(data, lc_offset + 88).unwrap_or(0);
+                    if cookie != 0 {
+                        mitigations.stack_canary = true;
+                    }
+                }
+                // GuardCFCheckFunctionPointer is at offset 112 (size >= 120)
                 if (dll_chars & 0x4000) != 0 && lc_size >= 120 && lc_offset + 120 <= data.len() {
                     let guard_check = read_u64(data, lc_offset + 112).unwrap_or(0);
                     if guard_check != 0 {
@@ -451,6 +462,13 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 }
             } else {
                 // In 32-bit load config:
+                // SecurityCookie is at offset 60 (size >= 64)
+                if lc_size >= 64 && lc_offset + 64 <= data.len() {
+                    let cookie = read_u32(data, lc_offset + 60).unwrap_or(0);
+                    if cookie != 0 {
+                        mitigations.stack_canary = true;
+                    }
+                }
                 // SafeSEH: SEHandlerTable at offset 64, SEHandlerCount at offset 68 (size >= 72)
                 if lc_size >= 72 && lc_offset + 72 <= data.len() {
                     let se_table = read_u32(data, lc_offset + 64).unwrap_or(0);

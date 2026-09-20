@@ -215,6 +215,10 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let mut dynsym_offset: Option<usize> = None;
     let mut dynsym_size: usize = 0;
     let mut dynsym_entsize: usize = if is_64 { 24 } else { 16 };
+    let mut strtab_offset: Option<usize> = None;
+    let mut symtab_offset: Option<usize> = None;
+    let mut symtab_size: usize = 0;
+    let mut symtab_entsize: usize = if is_64 { 24 } else { 16 };
 
     for i in 0..shnum {
         let off = shoff + (i * shentsize);
@@ -249,9 +253,31 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             (addr, offset, size, flags, link, entsize)
         };
 
-        if name == ".dynstr" || (sh_type == 3 && dynstr_offset.is_none() && name.contains("dynstr"))
+        if name == ".dynstr"
+            || (sh_type == 3
+                && dynstr_offset.is_none()
+                && (name.contains("dynstr") || shstrtab_offset == 0))
         {
             dynstr_offset = Some(sec_offset);
+        }
+        if name == ".strtab" {
+            strtab_offset = Some(sec_offset);
+        }
+        if sh_type == 2 || name == ".symtab" {
+            symtab_offset = Some(sec_offset);
+            symtab_size = size;
+            if entsize > 0 {
+                symtab_entsize = entsize;
+            }
+            if link < shnum && strtab_offset.is_none() {
+                let link_sh_off = shoff + (link * shentsize);
+                let link_off = if is_64 {
+                    read_u64(data, link_sh_off + 24, be).unwrap_or(0) as usize
+                } else {
+                    read_u32(data, link_sh_off + 16, be).unwrap_or(0) as usize
+                };
+                strtab_offset = Some(link_off);
+            }
         }
         if sh_type == 11 || name == ".dynsym" {
             // SHT_DYNSYM
@@ -302,10 +328,12 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         });
     }
 
-    // Extract dynamic library dependencies (DT_NEEDED) and symbols from .dynsym/.dynamic
-    let mut needed_libs = Vec::new();
+    // Extract dynamic library dependencies (DT_NEEDED), search paths (DT_RPATH, DT_RUNPATH), and flags
+    let mut needed_indices = Vec::new();
     let mut bind_now = false;
     let mut has_df_1_pie = false;
+    let mut rpath_idx: Option<usize> = None;
+    let mut runpath_idx: Option<usize> = None;
 
     if let Some(dyn_off) = dynamic_offset {
         let entry_size = if is_64 { 16 } else { 8 };
@@ -328,17 +356,19 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             }
             if tag == 1 {
                 // DT_NEEDED
-                if let Some(str_off) = dynstr_offset {
-                    if let Some(lib_name) = read_cstring(data, str_off + val) {
-                        needed_libs.push(lib_name);
-                    }
-                }
+                needed_indices.push(val);
             } else if tag == 5 && dynstr_offset.is_none() {
                 // DT_STRTAB
                 dynstr_offset = Some(val);
+            } else if tag == 15 {
+                // DT_RPATH
+                rpath_idx = Some(val);
             } else if tag == 24 {
                 // DT_BIND_NOW
                 bind_now = true;
+            } else if tag == 29 {
+                // DT_RUNPATH
+                runpath_idx = Some(val);
             } else if tag == 30 {
                 // DT_FLAGS: DF_BIND_NOW = 0x01
                 if (val & 0x01) != 0 {
@@ -357,6 +387,24 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         }
     }
 
+    let mut needed_libs = Vec::new();
+    let mut rpath: Option<String> = None;
+    let mut runpath: Option<String> = None;
+
+    if let Some(str_off) = dynstr_offset {
+        for idx in needed_indices {
+            if let Some(lib_name) = read_cstring(data, str_off + idx) {
+                needed_libs.push(lib_name);
+            }
+        }
+        if let Some(idx) = rpath_idx {
+            rpath = read_cstring(data, str_off + idx);
+        }
+        if let Some(idx) = runpath_idx {
+            runpath = read_cstring(data, str_off + idx);
+        }
+    }
+
     let relro = if has_relro_segment {
         if bind_now {
             "Full".to_string()
@@ -371,13 +419,29 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     let mut imports = Vec::new();
     let mut exports = Vec::new();
+    let mut has_stack_canary = false;
+    let mut has_fortify = false;
+
+    // Helper to check symbol for stack canary and fortify
+    let check_sym = |name: &str, canary: &mut bool, fortify: &mut bool| {
+        if name == "__stack_chk_fail"
+            || name == "__stack_chk_fail_local"
+            || name == "__stack_chk_guard"
+            || name == "__intel_security_cookie"
+        {
+            *canary = true;
+        }
+        if name.starts_with("__") && name.ends_with("_chk") {
+            *fortify = true;
+        }
+    };
 
     // Parse symbols from .dynsym
     if let (Some(sym_off), Some(str_off)) = (dynsym_offset, dynstr_offset) {
         let count = dynsym_size / dynsym_entsize;
         let mut imported_funcs = Vec::new();
 
-        for i in 0..count.min(1024) {
+        for i in 0..count.min(4096) {
             let s_off = sym_off + (i * dynsym_entsize);
             if s_off + dynsym_entsize > data.len() {
                 break;
@@ -398,6 +462,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
             if st_name > 0 {
                 if let Some(sym_name) = read_cstring(data, str_off + st_name) {
+                    check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
                     let bind = st_info >> 4; // STB_GLOBAL=1, STB_WEAK=2
                     if st_shndx == 0 {
                         // SHN_UNDEF -> Imported symbol
@@ -430,6 +495,25 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 dll: "Dynamic / libc".to_string(),
                 functions: imported_funcs,
             });
+        }
+    }
+
+    // Also check .symtab if present (e.g. static binaries or unstripped binaries)
+    if (!has_stack_canary || !has_fortify) && symtab_offset.is_some() && strtab_offset.is_some() {
+        if let (Some(sym_off), Some(str_off)) = (symtab_offset, strtab_offset) {
+            let count = symtab_size / symtab_entsize;
+            for i in 0..count.min(8192) {
+                let s_off = sym_off + (i * symtab_entsize);
+                if s_off + symtab_entsize > data.len() {
+                    break;
+                }
+                let name_idx = read_u32(data, s_off, be).unwrap_or(0) as usize;
+                if name_idx > 0 {
+                    if let Some(sym_name) = read_cstring(data, str_off + name_idx) {
+                        check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
+                    }
+                }
+            }
         }
     }
 
@@ -468,6 +552,10 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             has_rwx_sections: has_rwx,
             pie: is_pie,
             relro,
+            stack_canary: has_stack_canary,
+            fortify: has_fortify,
+            rpath,
+            runpath,
         },
         sections,
         imports,

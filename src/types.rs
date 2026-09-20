@@ -78,6 +78,10 @@ pub struct SecurityMitigations {
     pub has_rwx_sections: bool,
     pub pie: bool,
     pub relro: String,
+    pub stack_canary: bool,
+    pub fortify: bool,
+    pub rpath: Option<String>,
+    pub runpath: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

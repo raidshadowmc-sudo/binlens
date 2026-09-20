@@ -278,7 +278,15 @@ fn print_checksec_row(name: &str, passed: bool, desc: &str) {
     } else {
         "  FAIL ".red().bold()
     };
-    println!("  │ {:<22} │ {} │ {:<35} │", name, status_str, desc);
+    let formatted_desc = if desc.len() > 35 {
+        format!("{}...", &desc[..32])
+    } else {
+        desc.to_string()
+    };
+    println!(
+        "  │ {:<22} │ {} │ {:<35} │",
+        name, status_str, formatted_desc
+    );
 }
 
 fn print_checksec_table(report: &BinaryReport) {
@@ -309,16 +317,45 @@ fn print_checksec_table(report: &BinaryReport) {
             "Structured Exception Handler table",
         );
     }
-    print_checksec_row(
-        "Control Flow Guard (CFG)",
-        report.mitigations.cfg,
-        "Indirect call target validation",
-    );
-    print_checksec_row(
-        "Authenticode (Embedded)",
-        report.mitigations.authenticode_signed,
-        "Embedded PKCS#7 table (absent if catalog-signed)",
-    );
+    if report.format == BinaryFormat::ELF32 || report.format == BinaryFormat::ELF64 {
+        let relro_full = report.mitigations.relro == "Full";
+        let relro_desc = format!("RELRO: {}", report.mitigations.relro);
+        print_checksec_row("RELRO", relro_full, &relro_desc);
+        print_checksec_row(
+            "Stack Canary",
+            report.mitigations.stack_canary,
+            "Stack smash protector (__stack_chk)",
+        );
+        print_checksec_row(
+            "FORTIFY_SOURCE",
+            report.mitigations.fortify,
+            "Fortified glibc functions (__*_chk)",
+        );
+        let rpath_desc = match (&report.mitigations.rpath, &report.mitigations.runpath) {
+            (Some(rp), Some(run)) => format!("RPATH={}, RUNPATH={}", rp, run),
+            (Some(rp), None) => format!("RPATH={}", rp),
+            (None, Some(run)) => format!("RUNPATH={}", run),
+            (None, None) => "No insecure runpaths configured".to_string(),
+        };
+        let rpath_safe = report.mitigations.rpath.is_none();
+        print_checksec_row("RPATH / RUNPATH", rpath_safe, &rpath_desc);
+    } else {
+        print_checksec_row(
+            "Stack Cookie (/GS)",
+            report.mitigations.stack_canary,
+            "Buffer security check cookie",
+        );
+        print_checksec_row(
+            "Control Flow Guard (CFG)",
+            report.mitigations.cfg,
+            "Indirect call target validation",
+        );
+        print_checksec_row(
+            "Authenticode (Embedded)",
+            report.mitigations.authenticode_signed,
+            "Embedded PKCS#7 table",
+        );
+    }
     print_checksec_row(
         "W^X (No RWX Sections)",
         !report.mitigations.has_rwx_sections,

@@ -182,6 +182,13 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
   * **ELF**: Evaluates `PT_GNU_STACK` segment permissions. In accordance with Linux kernel loader semantics, if `PT_GNU_STACK` is absent, the stack defaults to executable (`dep_nx = false`).
 * **RELRO (Relocation Read-Only)**:
   * **ELF**: Inspects `PT_GNU_RELRO` and dynamic tags (`DT_BIND_NOW`, `DF_BIND_NOW`, `DF_1_NOW`) to distinguish **Full RELRO** from **Partial RELRO**.
+* **Stack Canary & Buffer Security Check**:
+  * **ELF**: Detects stack smash protector symbols (`__stack_chk_fail`, `__stack_chk_guard`, `__intel_security_cookie`) across `.dynsym` and `.symtab`.
+  * **PE**: Inspects `IMAGE_LOAD_CONFIG_DIRECTORY` for registered MSVC `/GS` buffer security cookies (`SecurityCookie`).
+* **FORTIFY_SOURCE**:
+  * **ELF**: Identifies fortified glibc runtime functions (`__*_chk`, such as `__printf_chk`, `__memcpy_chk`, `__snprintf_chk`).
+* **Runpath & Library Search Security (RPATH / RUNPATH)**:
+  * **ELF**: Decodes `DT_RPATH` (tag 15) and `DT_RUNPATH` (tag 29) from dynamic string tables to highlight insecure library hijacking vectors.
 * **Control Flow Guard (CFG)**:
   * **PE**: Cross-references `IMAGE_DLLCHARACTERISTICS_GUARD_CF` with `IMAGE_LOAD_CONFIG_DIRECTORY`. Validates registered `GuardCFCheckFunctionPointer` (offset 112 for PE32+, offset 72 for PE32) to prevent flag-only false positives.
 * **Structured Exception Handling (SafeSEH / SEH)**:
@@ -270,7 +277,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 27 automated unit, regression, and differential tests:
+* **Automated Test Suite**: Includes 31 automated unit, regression, and differential tests:
   ```bash
   cargo test
   ```
@@ -280,6 +287,7 @@ cargo install --path .
 ## Roadmap
 
 - [x] MSVC Rich Header Analysis: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
+- [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
 - [ ] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
 - [ ] Cryptographic Authenticode Validation: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
 - [ ] YARA Rule Integration: Native rule compilation and matching against mapped binary memory.
