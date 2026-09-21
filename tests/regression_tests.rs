@@ -316,6 +316,63 @@ fn test_strings_no_runaway_concatenation() {
 }
 
 #[test]
+fn test_strings_utf16_odd_offset() {
+    // UTF-16LE string "https://evil.com" starting at odd offset (index 1)
+    let mut data = vec![0xAA]; // 1 leading dummy byte to create odd alignment
+    for c in "https://evil.com".encode_utf16() {
+        data.extend_from_slice(&c.to_le_bytes());
+    }
+    data.extend_from_slice(&[0x00, 0x00]); // null terminator
+
+    let categorized = extract_strings(&data, 4);
+    let urls: Vec<_> = categorized.iter().filter(|c| c.category == "URL").collect();
+    assert_eq!(
+        urls.len(),
+        1,
+        "Must extract UTF-16LE strings even with odd byte offset"
+    );
+    assert_eq!(urls[0].value, "https://evil.com");
+}
+
+#[test]
+fn test_strings_suspicious_api_variants() {
+    let data = b"VirtualAllocEx\0LoadLibraryA\0CreateProcessW\0SomeNormalFunc\0";
+    let categorized = extract_strings(data, 4);
+    let apis: Vec<_> = categorized
+        .iter()
+        .filter(|c| c.category == "Suspicious API/Command")
+        .collect();
+
+    assert_eq!(
+        apis.len(),
+        3,
+        "Must match API variants like VirtualAllocEx, LoadLibraryA, CreateProcessW"
+    );
+    assert_eq!(apis[0].value, "VirtualAllocEx");
+    assert_eq!(apis[1].value, "LoadLibraryA");
+    assert_eq!(apis[2].value, "CreateProcessW");
+}
+
+#[test]
+fn test_strings_ipv4_heuristics() {
+    // Real IPs vs false positive version strings & unroutable IPs
+    let data = b"192.168.1.1\x0010.0.0.1\x001.2.3.4\x001.0.0.0\x000.0.0.0\x00255.255.255.255\x00";
+    let categorized = extract_strings(data, 4);
+    let ips: Vec<_> = categorized
+        .iter()
+        .filter(|c| c.category == "IPv4")
+        .collect();
+
+    assert_eq!(
+        ips.len(),
+        2,
+        "Only legitimate routable IPv4 addresses should pass heuristics"
+    );
+    assert_eq!(ips[0].value, "192.168.1.1");
+    assert_eq!(ips[1].value, "10.0.0.1");
+}
+
+#[test]
 fn test_diff_headers_distinguish_identical_basenames() {
     let report_a = BinaryReport {
         file_name: "target/debug/app.exe".to_string(),

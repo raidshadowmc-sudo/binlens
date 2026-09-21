@@ -15,9 +15,8 @@ pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
             current_ascii.push(b);
         } else {
             if current_ascii.len() >= min_len {
-                if let Ok(s) = String::from_utf8(current_ascii.clone()) {
-                    // Avoid runaway strings by splitting on spaces or checking tokens
-                    process_and_classify(&s, start_idx, &mut results);
+                if let Ok(s) = std::str::from_utf8(&current_ascii) {
+                    process_and_classify(s, start_idx, &mut results);
                 }
             }
             current_ascii.clear();
@@ -26,33 +25,43 @@ pub fn extract_strings(data: &[u8], min_len: usize) -> Vec<CategorizedString> {
 
     // Process remainder
     if current_ascii.len() >= min_len {
-        if let Ok(s) = String::from_utf8(current_ascii) {
-            process_and_classify(&s, start_idx, &mut results);
+        if let Ok(s) = std::str::from_utf8(&current_ascii) {
+            process_and_classify(s, start_idx, &mut results);
         }
     }
 
-    // 2. Scan UTF-16LE
-    let mut current_utf16 = Vec::new();
-    let mut u16_start = 0;
-    let mut i = 0;
-    while i + 1 < data.len() {
-        let b1 = data[i];
-        let b2 = data[i + 1];
-        if b2 == 0 && (0x20..=0x7E).contains(&b1) {
-            if current_utf16.is_empty() {
-                u16_start = i;
+    // 2. Scan UTF-16LE across both even and odd alignment offsets
+    for start_align in 0..2 {
+        let mut current_utf16 = Vec::new();
+        let mut u16_start = 0;
+        let mut i = start_align;
+        while i + 1 < data.len() {
+            let b1 = data[i];
+            let b2 = data[i + 1];
+            if b2 == 0 && (0x20..=0x7E).contains(&b1) {
+                if current_utf16.is_empty() {
+                    u16_start = i;
+                }
+                current_utf16.push(b1 as char);
+                i += 2;
+            } else {
+                if current_utf16.len() >= min_len {
+                    let s: String = current_utf16.iter().collect();
+                    process_and_classify(&s, u16_start, &mut results);
+                }
+                current_utf16.clear();
+                i += 2;
             }
-            current_utf16.push(b1 as char);
-            i += 2;
-        } else {
-            if current_utf16.len() >= min_len {
-                let s: String = current_utf16.iter().collect();
-                process_and_classify(&s, u16_start, &mut results);
-            }
-            current_utf16.clear();
-            i += 2;
+        }
+        if current_utf16.len() >= min_len {
+            let s: String = current_utf16.iter().collect();
+            process_and_classify(&s, u16_start, &mut results);
         }
     }
+
+    // Sort by offset and deduplicate identical entries at the same offset
+    results.sort_by_key(|r| r.offset);
+    results.dedup_by(|a, b| a.offset == b.offset && a.value == b.value);
 
     results
 }
@@ -107,6 +116,14 @@ fn classify_string(s: &str) -> Option<&'static str> {
         "createprocess",
         "isdebuggerpresent",
         "ntqueryinformationprocess",
+        "ntqueueapcthread",
+        "queueuserapc",
+        "ntcreatesection",
+        "ntmapviewofsection",
+        "setwindowshookex",
+        "minidumpwritedump",
+        "adjusttokenprivileges",
+        "samopenuser",
         "cmd.exe",
         "powershell",
         "vssadmin",
@@ -114,14 +131,23 @@ fn classify_string(s: &str) -> Option<&'static str> {
         "bitsadmin",
         "schtasks",
         "regsvr32",
+        "lsass.exe",
+        "psexec",
     ];
 
-    // Only tag as suspicious API if string length is bounded (not a giant merged concatenation)
+    // Substring and prefix matching for API variants (e.g. VirtualAllocEx, LoadLibraryA, CreateProcessW)
     if s.len() <= 64 {
         for api in &suspicious_apis {
             if lower == *api
                 || lower == format!("{}.exe", api)
                 || lower.starts_with(&format!("{}(", api))
+                || lower.starts_with(&format!("{}ex", api))
+                || lower.starts_with(&format!("{}a", api))
+                || lower.starts_with(&format!("{}w", api))
+                || lower.starts_with(&format!("{}numa", api))
+                || (api.ends_with(".exe") && lower.contains(api))
+                || (*api == "powershell" && lower.contains("powershell"))
+                || (*api == "cmd.exe" && lower.contains("cmd.exe"))
             {
                 return Some("Suspicious API/Command");
             }
@@ -140,11 +166,33 @@ fn is_ipv4(s: &str) -> bool {
     if parts.len() != 4 {
         return false;
     }
-    for part in parts {
+
+    let mut octets = [0u8; 4];
+    for (i, part) in parts.iter().enumerate() {
+        // Disallow leading zeroes (e.g. "01.02.03.04") unless single "0"
+        if part.len() > 1 && part.starts_with('0') {
+            return false;
+        }
         match part.parse::<u8>() {
-            Ok(_) => {}
+            Ok(val) => octets[i] = val,
             Err(_) => return false,
         }
     }
+
+    // Heuristics: reject 0.0.0.0, broadcast 255.255.255.255, and unroutable 0.x.x.x
+    if octets[0] == 0
+        || (octets[0] == 255 && octets[1] == 255 && octets[2] == 255 && octets[3] == 255)
+    {
+        return false;
+    }
+
+    // Heuristic: reject software build/version numbers masquerading as IPs (e.g. 1.0.0.0, 2.0.0.0, 1.2.3.4)
+    if octets[0] < 10 && octets[2] == 0 && octets[3] <= 1 {
+        return false;
+    }
+    if octets[0] < 5 && octets[1] < 10 && octets[2] < 10 && octets[3] < 10 {
+        return false;
+    }
+
     true
 }

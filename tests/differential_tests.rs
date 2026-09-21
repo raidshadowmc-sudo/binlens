@@ -285,3 +285,119 @@ print(json.dumps(result))
         );
     }
 }
+
+#[test]
+fn test_differential_synthetic_pe_cross_platform() {
+    // Generate a valid 64-bit PE image in memory
+    let mut pe_data = vec![0u8; 0x1000];
+    pe_data[0..2].copy_from_slice(b"MZ");
+    pe_data[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+    let nt = 64;
+    pe_data[nt..nt + 4].copy_from_slice(b"PE\0\0");
+    let file_hdr = nt + 4;
+    pe_data[file_hdr..file_hdr + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // x64
+    pe_data[file_hdr + 2..file_hdr + 4].copy_from_slice(&2u16.to_le_bytes()); // 2 sections
+    pe_data[file_hdr + 16..file_hdr + 18].copy_from_slice(&240u16.to_le_bytes());
+
+    let opt_hdr = file_hdr + 20;
+    pe_data[opt_hdr..opt_hdr + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+    pe_data[opt_hdr + 16..opt_hdr + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // AddressOfEntryPoint = 0x1000
+    pe_data[opt_hdr + 24..opt_hdr + 32].copy_from_slice(&0x140000000u64.to_le_bytes()); // ImageBase = 0x140000000
+
+    // Section 1: .text at 0x1000
+    let sec1 = opt_hdr + 240;
+    pe_data[sec1..sec1 + 8].copy_from_slice(b".text\0\0\0");
+    pe_data[sec1 + 8..sec1 + 12].copy_from_slice(&0x400u32.to_le_bytes()); // VirtualSize = 0x400
+    pe_data[sec1 + 12..sec1 + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // VirtualAddress = 0x1000
+    pe_data[sec1 + 16..sec1 + 20].copy_from_slice(&0x400u32.to_le_bytes()); // SizeOfRawData = 0x400
+    pe_data[sec1 + 20..sec1 + 24].copy_from_slice(&0x400u32.to_le_bytes()); // PointerToRawData = 0x400
+    pe_data[sec1 + 36..sec1 + 40].copy_from_slice(&0x60000020u32.to_le_bytes());
+
+    // Section 2: .data at 0x2000
+    let sec2 = sec1 + 40;
+    pe_data[sec2..sec2 + 8].copy_from_slice(b".data\0\0\0");
+    pe_data[sec2 + 8..sec2 + 12].copy_from_slice(&0x200u32.to_le_bytes());
+    pe_data[sec2 + 12..sec2 + 16].copy_from_slice(&0x2000u32.to_le_bytes());
+    pe_data[sec2 + 16..sec2 + 20].copy_from_slice(&0x200u32.to_le_bytes());
+    pe_data[sec2 + 20..sec2 + 24].copy_from_slice(&0x800u32.to_le_bytes());
+    pe_data[sec2 + 36..sec2 + 40].copy_from_slice(&0xC0000040u32.to_le_bytes());
+
+    // Write temp file to pass to python pefile (works on Windows, Linux, and macOS)
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("binlens_synthetic_test.exe");
+    std::fs::write(&temp_file, &pe_data).expect("Failed to write temporary test PE binary");
+
+    let report = parse_pe(&pe_data, "binlens_synthetic_test.exe")
+        .expect("binlens should successfully parse synthetic PE");
+
+    let py_script = r#"
+import pefile
+import json
+import sys
+
+pe = pefile.PE(sys.argv[1])
+result = {
+    "entry_point": pe.OPTIONAL_HEADER.AddressOfEntryPoint,
+    "sections_count": len(pe.sections),
+    "sections": [{"name": s.Name.decode('utf-8', errors='ignore').rstrip('\x00'), "raw_size": s.SizeOfRawData, "va": s.VirtualAddress} for s in pe.sections]
+}
+print(json.dumps(result))
+"#;
+
+    let output = Command::new("python")
+        .args(["-c", py_script, temp_file.to_str().unwrap()])
+        .output();
+
+    let _ = std::fs::remove_file(&temp_file);
+
+    let output = match output {
+        Ok(out) if out.status.success() => out,
+        _ => {
+            eprintln!("Python or pefile not available, skipping cross-platform test");
+            return;
+        }
+    };
+
+    let pefile_data: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse JSON from pefile");
+
+    // Differential asserts
+    assert_eq!(
+        report.entry_point,
+        pefile_data["entry_point"].as_u64().unwrap(),
+        "Cross-platform differential entry point mismatch!"
+    );
+    assert_eq!(
+        report.sections.len(),
+        pefile_data["sections_count"].as_u64().unwrap() as usize,
+        "Cross-platform differential section count mismatch!"
+    );
+
+    let pe_secs = pefile_data["sections"].as_array().unwrap();
+    assert_eq!(pe_secs.len(), 2);
+    assert_eq!(
+        report.sections[0].name,
+        pe_secs[0]["name"].as_str().unwrap()
+    );
+    assert_eq!(
+        report.sections[0].raw_size,
+        pe_secs[0]["raw_size"].as_u64().unwrap()
+    );
+    assert_eq!(
+        report.sections[0].virtual_address,
+        pe_secs[0]["va"].as_u64().unwrap()
+    );
+
+    assert_eq!(
+        report.sections[1].name,
+        pe_secs[1]["name"].as_str().unwrap()
+    );
+    assert_eq!(
+        report.sections[1].raw_size,
+        pe_secs[1]["raw_size"].as_u64().unwrap()
+    );
+    assert_eq!(
+        report.sections[1].virtual_address,
+        pe_secs[1]["va"].as_u64().unwrap()
+    );
+}
