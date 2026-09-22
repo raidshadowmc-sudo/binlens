@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
 pub mod diff;
 pub mod disasm;

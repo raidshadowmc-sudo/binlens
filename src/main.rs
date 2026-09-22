@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
 use binlens::{diff, elf, entropy, macho, pe, printer, strings, types};
 use clap::{Parser, Subcommand};

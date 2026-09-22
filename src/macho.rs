@@ -574,14 +574,12 @@ fn parse_single_macho(
                 // Embedded code signature present in binary
                 mitigations.authenticode_signed = true;
             }
-            LC_SYMTAB => {
-                if cmd_offset + 24 <= slice_data.len() {
-                    let symoff = read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0) as usize;
-                    let nsyms = read_u32(slice_data, cmd_offset + 12, be).unwrap_or(0) as usize;
-                    let stroff = read_u32(slice_data, cmd_offset + 16, be).unwrap_or(0) as usize;
-                    let strsize = read_u32(slice_data, cmd_offset + 20, be).unwrap_or(0) as usize;
-                    symtab_info = Some((symoff, nsyms, stroff, strsize));
-                }
+            LC_SYMTAB if cmd_offset + 24 <= slice_data.len() => {
+                let symoff = read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0) as usize;
+                let nsyms = read_u32(slice_data, cmd_offset + 12, be).unwrap_or(0) as usize;
+                let stroff = read_u32(slice_data, cmd_offset + 16, be).unwrap_or(0) as usize;
+                let strsize = read_u32(slice_data, cmd_offset + 20, be).unwrap_or(0) as usize;
+                symtab_info = Some((symoff, nsyms, stroff, strsize));
             }
             _ => {}
         }

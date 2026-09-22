@@ -37,7 +37,7 @@ jobs:
       run: cargo fmt -- --check
 
     - name: Clippy Linter
-      run: cargo clippy --all-targets -- -D warnings -A clippy::collapsible_if
+      run: cargo clippy --all-targets -- -D warnings -A clippy::collapsible_if -A clippy::collapsible_match
 
     - name: Cargo Test
       run: cargo test --verbose
