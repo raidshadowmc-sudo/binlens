@@ -386,6 +386,27 @@ fn print_checksec_table(report: &BinaryReport) {
         };
         let rpath_safe = report.mitigations.rpath.is_none();
         print_checksec_row("RPATH / RUNPATH", rpath_safe, &rpath_desc);
+    } else if report.format == BinaryFormat::MachO {
+        print_checksec_row(
+            "Stack Canary",
+            report.mitigations.stack_canary,
+            "Stack smash protector (___stack_chk)",
+        );
+        print_checksec_row(
+            "FORTIFY_SOURCE",
+            report.mitigations.fortify,
+            "Fortified libc functions (___*_chk)",
+        );
+        let rpath_desc = match &report.mitigations.rpath {
+            Some(rp) => format!("RPATH={}", rp),
+            None => "No runtime search paths configured".to_string(),
+        };
+        print_checksec_row("RPATH", true, &rpath_desc);
+        print_checksec_row(
+            "Code Signature",
+            report.mitigations.authenticode_signed,
+            "Apple LC_CODE_SIGNATURE slice",
+        );
     } else {
         print_checksec_row(
             "Stack Cookie (/GS)",

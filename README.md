@@ -1,6 +1,6 @@
 # binlens
 
-A memory-mapped binary inspection, Shannon entropy analyzer, compiler telemetry decoder, and exploit mitigation auditor for Windows Portable Executable (PE) and Linux Executable and Linkable Format (ELF) binaries. Written in safe, dependency-light Rust.
+A memory-mapped binary inspection, Shannon entropy analyzer, compiler telemetry decoder, and exploit mitigation auditor for Windows Portable Executable (PE), Linux Executable and Linkable Format (ELF), and macOS / iOS Mach-O (including Universal Fat) binaries. Written in safe, dependency-light Rust.
 
 ---
 
@@ -19,7 +19,7 @@ Security auditing and binary triage are frequently fragmented across disparate s
 | Feature / Capability | `binlens` | Python `pefile` / scripts | `checksec.sh` |
 | :--- | :--- | :--- | :--- |
 | **Runtime Dependencies** | None (Single static binary) | Python 3 + `pip` packages | Bash, readelf, objdump |
-| **Cross-Platform Support** | Windows & Linux (PE + ELF) | PE only (ELF requires `pyelftools`) | Linux / ELF only |
+| **Cross-Platform Support** | Windows, Linux & macOS (PE, ELF, Mach-O) | PE only (ELF/Mach-O require extra libs) | Linux / ELF only |
 | **Throughput & Memory** | Zero-copy `memmap2` (minimal heap) | Interpreted overhead (~50–200 ms) | Process spawning overhead |
 | **Shannon Entropy Visualizer** | In-terminal heatmap + histogram | Raw float values only | None |
 | **MSVC Rich Header Decoding**| Built-in with VS toolset mapping | Raw tuples / requires custom parser| None |
@@ -284,7 +284,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 38 automated unit, regression, and cross-platform differential tests:
+* **Automated Test Suite**: Includes 41 automated unit, regression, and cross-platform differential tests:
   ```bash
   cargo test
   ```
@@ -296,7 +296,7 @@ cargo install --path .
 - [x] MSVC Rich Header Analysis: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
 - [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
 - [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
-- [ ] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
+- [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
 - [ ] Cryptographic Authenticode Validation: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
 - [ ] YARA Rule Integration: Native rule compilation and matching against mapped binary memory.
 

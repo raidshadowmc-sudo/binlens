@@ -1,6 +1,6 @@
 #![allow(clippy::collapsible_if)]
 
-use binlens::{diff, elf, entropy, pe, printer, strings, types};
+use binlens::{diff, elf, entropy, macho, pe, printer, strings, types};
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::fs;
@@ -131,6 +131,8 @@ fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> t
         pe_report
     } else if let Some(elf_report) = elf::parse_elf(data, file_name) {
         elf_report
+    } else if let Some(macho_report) = macho::parse_macho(data, file_name) {
+        macho_report
     } else {
         let overall_entropy = entropy::calculate_entropy(data);
         use md5::Md5;

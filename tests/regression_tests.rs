@@ -1223,3 +1223,252 @@ fn test_disassemble_raw_bytes_helper() {
     assert_eq!(insns_64[0].mnemonic, "nop");
     assert_eq!(insns_64[1].mnemonic, "int3");
 }
+
+#[test]
+fn test_macho_64_bit_parsing_and_mitigations() {
+    use binlens::macho::*;
+
+    let mut macho = vec![0u8; 1024];
+
+    // Mach-O Header (32 bytes)
+    macho[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes()); // magic: MH_MAGIC_64
+    macho[4..8].copy_from_slice(&CPU_TYPE_X86_64.to_le_bytes()); // cputype: x86_64
+    macho[8..12].copy_from_slice(&0x3u32.to_le_bytes()); // cpusubtype
+    macho[12..16].copy_from_slice(&MH_EXECUTE.to_le_bytes()); // filetype: MH_EXECUTE
+    let ncmds = 6u32;
+    macho[16..20].copy_from_slice(&ncmds.to_le_bytes());
+    let flags = MH_PIE;
+    macho[24..28].copy_from_slice(&flags.to_le_bytes());
+
+    let mut offset = 32;
+
+    // Command 1: LC_SEGMENT_64 (__TEXT)
+    // cmdsize = 72 (segment header) + 80 (1 section) = 152
+    macho[offset..offset + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&152u32.to_le_bytes());
+    macho[offset + 8..offset + 14].copy_from_slice(b"__TEXT");
+    macho[offset + 24..offset + 32].copy_from_slice(&0x100000000u64.to_le_bytes()); // vmaddr
+    macho[offset + 32..offset + 40].copy_from_slice(&0x1000u64.to_le_bytes()); // vmsize
+    macho[offset + 40..offset + 48].copy_from_slice(&0u64.to_le_bytes()); // fileoff
+    macho[offset + 48..offset + 56].copy_from_slice(&0x400u64.to_le_bytes()); // filesize
+    macho[offset + 56..offset + 60].copy_from_slice(&5u32.to_le_bytes()); // maxprot = r-x
+    macho[offset + 60..offset + 64].copy_from_slice(&5u32.to_le_bytes()); // initprot = r-x
+    macho[offset + 64..offset + 68].copy_from_slice(&1u32.to_le_bytes()); // nsects = 1
+    offset += 72;
+
+    // Section 1: __text inside __TEXT
+    macho[offset..offset + 6].copy_from_slice(b"__text");
+    macho[offset + 16..offset + 22].copy_from_slice(b"__TEXT");
+    macho[offset + 32..offset + 40].copy_from_slice(&0x100000200u64.to_le_bytes()); // addr
+    macho[offset + 40..offset + 48].copy_from_slice(&0x40u64.to_le_bytes()); // size
+    macho[offset + 48..offset + 52].copy_from_slice(&0x200u32.to_le_bytes()); // offset in file
+    offset += 80;
+
+    // Command 2: LC_MAIN
+    macho[offset..offset + 4].copy_from_slice(&LC_MAIN.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&24u32.to_le_bytes());
+    macho[offset + 8..offset + 16].copy_from_slice(&0x200u64.to_le_bytes()); // entryoff = 0x200
+    macho[offset + 16..offset + 24].copy_from_slice(&0u64.to_le_bytes()); // stacksize
+    offset += 24;
+
+    // Command 3: LC_LOAD_DYLIB
+    let dylib_name = b"/usr/lib/libSystem.B.dylib\0";
+    macho[offset..offset + 4].copy_from_slice(&LC_LOAD_DYLIB.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&56u32.to_le_bytes());
+    macho[offset + 8..offset + 12].copy_from_slice(&24u32.to_le_bytes()); // name_offset = 24
+    macho[offset + 24..offset + 24 + dylib_name.len()].copy_from_slice(dylib_name);
+    offset += 56;
+
+    // Command 4: LC_RPATH
+    let rpath_bytes = b"@loader_path/../Frameworks\0";
+    macho[offset..offset + 4].copy_from_slice(&LC_RPATH.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&48u32.to_le_bytes());
+    macho[offset + 8..offset + 12].copy_from_slice(&16u32.to_le_bytes()); // path_offset = 16
+    macho[offset + 16..offset + 16 + rpath_bytes.len()].copy_from_slice(rpath_bytes);
+    offset += 48;
+
+    // Command 5: LC_CODE_SIGNATURE
+    macho[offset..offset + 4].copy_from_slice(&LC_CODE_SIGNATURE.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&16u32.to_le_bytes());
+    macho[offset + 8..offset + 12].copy_from_slice(&0x380u32.to_le_bytes()); // dataoff
+    macho[offset + 12..offset + 16].copy_from_slice(&0x50u32.to_le_bytes()); // datasize
+    offset += 16;
+
+    // Command 6: LC_SYMTAB
+    let symoff = 0x280u32;
+    let nsyms = 3u32;
+    let stroff = 0x300u32;
+    let strsize = 0x80u32;
+    macho[offset..offset + 4].copy_from_slice(&LC_SYMTAB.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&24u32.to_le_bytes());
+    macho[offset + 8..offset + 12].copy_from_slice(&symoff.to_le_bytes());
+    macho[offset + 12..offset + 16].copy_from_slice(&nsyms.to_le_bytes());
+    macho[offset + 16..offset + 20].copy_from_slice(&stroff.to_le_bytes());
+    macho[offset + 20..offset + 24].copy_from_slice(&strsize.to_le_bytes());
+    offset += 24;
+
+    let sizeofcmds = (offset - 32) as u32;
+    macho[20..24].copy_from_slice(&sizeofcmds.to_le_bytes());
+
+    // Write opcodes at entryoff = 0x200 (x86_64)
+    // 55                push rbp
+    // 48 89 e5          mov rbp, rsp
+    // 31 c0             xor eax, eax
+    // 5d                pop rbp
+    // c3                ret
+    let code = [0x55, 0x48, 0x89, 0xE5, 0x31, 0xC0, 0x5D, 0xC3];
+    macho[0x200..0x200 + code.len()].copy_from_slice(&code);
+
+    // Build String Table at stroff (0x300)
+    let str_data = b"\0___stack_chk_fail\0___memcpy_chk\0_main_entry\0";
+    let str_dest = stroff as usize;
+    macho[str_dest..str_dest + str_data.len()].copy_from_slice(str_data);
+
+    // Build Symbol Table entries at symoff (0x280) (16 bytes each for 64-bit nlist_64)
+    // Symbol 0: ___stack_chk_fail (n_strx = 1, n_type = N_EXT | N_UNDF = 0x01)
+    let s0 = symoff as usize;
+    macho[s0..s0 + 4].copy_from_slice(&1u32.to_le_bytes());
+    macho[s0 + 4] = N_EXT | N_UNDF;
+
+    // Symbol 1: ___memcpy_chk (n_strx = 19, n_type = N_EXT | N_UNDF = 0x01)
+    let s1 = s0 + 16;
+    macho[s1..s1 + 4].copy_from_slice(&19u32.to_le_bytes());
+    macho[s1 + 4] = N_EXT | N_UNDF;
+
+    // Symbol 2: _main_entry (n_strx = 33, n_type = N_EXT | N_SECT = 0x0f)
+    let s2 = s1 + 16;
+    macho[s2..s2 + 4].copy_from_slice(&33u32.to_le_bytes());
+    macho[s2 + 4] = N_EXT | N_SECT;
+    macho[s2 + 5] = 1; // section index 1
+    macho[s2 + 8..s2 + 16].copy_from_slice(&0x200u64.to_le_bytes());
+
+    let report = parse_macho(&macho, "test_binary.macho").expect("Must parse Mach-O 64-bit");
+    assert_eq!(report.format, BinaryFormat::MachO);
+    assert_eq!(report.architecture, "x86_64");
+    assert!(report.mitigations.pie, "MH_PIE flag must be recognized");
+    assert!(
+        report.mitigations.dep_nx,
+        "DEP/NX must default to enabled on modern Mach-O"
+    );
+    assert!(
+        report.mitigations.stack_canary,
+        "Stack canary must be detected via ___stack_chk_fail"
+    );
+    assert!(
+        report.mitigations.fortify,
+        "FORTIFY must be detected via ___memcpy_chk"
+    );
+    assert!(
+        report.mitigations.authenticode_signed,
+        "LC_CODE_SIGNATURE must indicate code signature"
+    );
+    assert_eq!(
+        report.mitigations.rpath,
+        Some("@loader_path/../Frameworks".to_string())
+    );
+    assert!(
+        !report.mitigations.has_rwx_sections,
+        "r-x __TEXT segment is not RWX"
+    );
+
+    // Verify imports & exports
+    assert_eq!(report.imports.len(), 1);
+    assert_eq!(report.imports[0].dll, "/usr/lib/libSystem.B.dylib");
+    assert!(
+        report.imports[0]
+            .functions
+            .contains(&"___stack_chk_fail".to_string())
+    );
+    assert!(
+        report.imports[0]
+            .functions
+            .contains(&"___memcpy_chk".to_string())
+    );
+
+    assert_eq!(report.exports.len(), 1);
+    assert_eq!(report.exports[0].name, "_main_entry");
+    assert_eq!(report.exports[0].rva, 0x200);
+
+    // Verify entry point preview disassembly
+    assert!(!report.entry_point_preview.is_empty());
+    assert_eq!(report.entry_point_preview[0].mnemonic, "push");
+    assert_eq!(report.entry_point_preview[1].mnemonic, "mov");
+    assert_eq!(report.entry_point_preview[2].mnemonic, "xor");
+}
+
+#[test]
+fn test_macho_universal_fat_binary() {
+    use binlens::macho::*;
+
+    let mut fat = vec![0u8; 2048];
+
+    // Magic: 0xcafebabe (Big Endian)
+    fat[0..4].copy_from_slice(&FAT_MAGIC.to_be_bytes());
+    let narchs = 2u32;
+    fat[4..8].copy_from_slice(&narchs.to_be_bytes());
+
+    // Arch 0: x86_64 at offset 0x200, size 0x200
+    let a0 = 8;
+    fat[a0..a0 + 4].copy_from_slice(&CPU_TYPE_X86_64.to_be_bytes());
+    fat[a0 + 4..a0 + 8].copy_from_slice(&3u32.to_be_bytes());
+    fat[a0 + 8..a0 + 12].copy_from_slice(&0x200u32.to_be_bytes()); // offset
+    fat[a0 + 12..a0 + 16].copy_from_slice(&0x200u32.to_be_bytes()); // size
+    fat[a0 + 16..a0 + 20].copy_from_slice(&12u32.to_be_bytes()); // align
+
+    // Arch 1: ARM64 at offset 0x400, size 0x200
+    let a1 = 28;
+    fat[a1..a1 + 4].copy_from_slice(&CPU_TYPE_ARM64.to_be_bytes());
+    fat[a1 + 4..a1 + 8].copy_from_slice(&0u32.to_be_bytes());
+    fat[a1 + 8..a1 + 12].copy_from_slice(&0x400u32.to_be_bytes()); // offset
+    fat[a1 + 12..a1 + 16].copy_from_slice(&0x200u32.to_be_bytes()); // size
+    fat[a1 + 16..a1 + 20].copy_from_slice(&14u32.to_be_bytes()); // align
+
+    // Slice 0 (x86_64) minimal Mach-O
+    let s0 = 0x200;
+    fat[s0..s0 + 4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+    fat[s0 + 4..s0 + 8].copy_from_slice(&CPU_TYPE_X86_64.to_le_bytes());
+    fat[s0 + 12..s0 + 16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+
+    // Slice 1 (ARM64) minimal Mach-O
+    let s1 = 0x400;
+    fat[s1..s1 + 4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+    fat[s1 + 4..s1 + 8].copy_from_slice(&CPU_TYPE_ARM64.to_le_bytes());
+    fat[s1 + 12..s1 + 16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+
+    let report = parse_macho(&fat, "test_universal.fat").expect("Must parse Universal Fat Mach-O");
+    assert_eq!(report.format, BinaryFormat::MachO);
+    // Should prefer ARM64 slice while recording both architectures in tag
+    assert!(report.architecture.contains("ARM64"));
+    assert!(
+        report
+            .architecture
+            .contains("Universal Fat Binary [x86_64, ARM64]")
+    );
+}
+
+#[test]
+fn test_macho_rwx_segment_detection() {
+    use binlens::macho::*;
+
+    let mut macho = vec![0u8; 512];
+    macho[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+    macho[4..8].copy_from_slice(&CPU_TYPE_ARM64.to_le_bytes());
+    macho[12..16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+    macho[16..20].copy_from_slice(&1u32.to_le_bytes()); // ncmds = 1
+
+    let offset = 32;
+    // LC_SEGMENT_64 with initprot = 7 (Read | Write | Execute)
+    macho[offset..offset + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+    macho[offset + 4..offset + 8].copy_from_slice(&72u32.to_le_bytes()); // cmdsize = 72
+    macho[offset + 8..offset + 14].copy_from_slice(b"__SELF");
+    macho[offset + 56..offset + 60].copy_from_slice(&7u32.to_le_bytes()); // maxprot = 7 (RWX)
+    macho[offset + 60..offset + 64].copy_from_slice(&7u32.to_le_bytes()); // initprot = 7 (RWX)
+
+    macho[20..24].copy_from_slice(&72u32.to_le_bytes()); // sizeofcmds
+
+    let report = parse_macho(&macho, "test_rwx.macho").expect("Must parse Mach-O");
+    assert!(
+        report.mitigations.has_rwx_sections,
+        "Mach-O with RWX initprot segment must flag has_rwx_sections = true"
+    );
+}
