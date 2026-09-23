@@ -148,14 +148,15 @@ pub fn decode_string(elem: &DerElement<'_>) -> Option<String> {
         }
         // BMPString (tag 0x1e) is big-endian UTF-16
         0x1e => {
-            if elem.data.len() % 2 != 0 {
+            if (elem.data.len() & 1) != 0 {
                 return None;
             }
-            let u16s: Vec<u16> = elem
-                .data
-                .chunks_exact(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
+            let mut u16s = Vec::with_capacity(elem.data.len() / 2);
+            let mut i = 0;
+            while i + 1 < elem.data.len() {
+                u16s.push(u16::from_be_bytes([elem.data[i], elem.data[i + 1]]));
+                i += 2;
+            }
             String::from_utf16(&u16s).ok()
         }
         _ => None,
