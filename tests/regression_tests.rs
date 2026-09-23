@@ -393,6 +393,7 @@ fn test_diff_headers_distinguish_identical_basenames() {
         imphash: None,
         interesting_strings: vec![],
         entry_point_preview: vec![],
+        authenticode: None,
     };
     let mut report_b = report_a.clone();
     report_b.file_name = "target/release/app.exe".to_string();
@@ -809,6 +810,7 @@ fn test_structured_diff_report() {
         imphash: None,
         interesting_strings: Vec::new(),
         entry_point_preview: Vec::new(),
+        authenticode: None,
     };
 
     let mut report_b = report_a.clone();
@@ -1077,6 +1079,7 @@ fn test_diff_stack_canary_and_fortify_drift() {
         imphash: None,
         interesting_strings: vec![],
         entry_point_preview: vec![],
+        authenticode: None,
     };
 
     let mut b = a.clone();
@@ -1471,4 +1474,185 @@ fn test_macho_rwx_segment_detection() {
         report.mitigations.has_rwx_sections,
         "Mach-O with RWX initprot segment must flag has_rwx_sections = true"
     );
+}
+
+#[test]
+fn test_authenticode_asn1_der_primitives() {
+    use binlens::authenticode::{
+        decode_oid, decode_string, decode_time, format_serial_number, parse_sequence, parse_tlv,
+    };
+
+    // 1. Short-form TLV: INTEGER 42 (0x02 0x01 0x2A)
+    let short_der = [0x02, 0x01, 0x2a];
+    let elem = parse_tlv(&short_der).expect("Should parse short TLV");
+    assert_eq!(elem.tag, 0x02);
+    assert_eq!(elem.header_len, 2);
+    assert_eq!(elem.data, &[0x2a]);
+    assert_eq!(elem.total_len(), 3);
+
+    // 2. Long-form TLV: OCTET STRING of 256 bytes
+    let mut long_der = vec![0x04, 0x82, 0x01, 0x00];
+    long_der.resize(4 + 256, 0xAA);
+    let long_elem = parse_tlv(&long_der).expect("Should parse long TLV");
+    assert_eq!(long_elem.tag, 0x04);
+    assert_eq!(long_elem.header_len, 4);
+    assert_eq!(long_elem.data.len(), 256);
+    assert_eq!(long_elem.total_len(), 260);
+
+    // 3. Truncated TLV should return None
+    assert!(parse_tlv(&[0x30, 0x10, 0x01]).is_none());
+
+    // 4. Decode OID: 2.16.840.1.101.3.4.2.1 (SHA-256)
+    // Encoded: 60 86 48 01 65 03 04 02 01
+    let sha256_oid_bytes = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+    assert_eq!(decode_oid(&sha256_oid_bytes), "2.16.840.1.101.3.4.2.1");
+
+    // 5. Decode String: PrintableString and UTF8String
+    let ps = parse_tlv(&[0x13, 0x04, b'T', b'e', b's', b't']).unwrap();
+    assert_eq!(decode_string(&ps), Some("Test".to_string()));
+
+    let utf8 = parse_tlv(&[0x0c, 0x05, b'H', b'e', b'l', b'l', b'o']).unwrap();
+    assert_eq!(decode_string(&utf8), Some("Hello".to_string()));
+
+    // 6. Decode UTCTime: 250218201835Z -> 2025-02-18 20:18:35 UTC
+    let mut utc_data = vec![0x17, 13];
+    utc_data.extend_from_slice(b"250218201835Z");
+    let utc_elem = parse_tlv(&utc_data).unwrap();
+    assert_eq!(
+        decode_time(&utc_elem),
+        Some("2025-02-18 20:18:35 UTC".to_string())
+    );
+
+    // 7. Format serial number
+    // Leading zeros stripped, uppercase hex
+    let serial = [0x00, 0x06, 0x69, 0xD3, 0x6C];
+    assert_eq!(format_serial_number(&serial), "0669D36C");
+
+    // All zero serial
+    let zero_serial = [0x00, 0x00];
+    assert_eq!(format_serial_number(&zero_serial), "00");
+
+    // Sequence parsing
+    let seq_bytes = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02];
+    let items = parse_sequence(&seq_bytes[2..]);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].tag, 0x02);
+    assert_eq!(items[1].tag, 0x02);
+}
+
+#[test]
+fn test_authenticode_real_or_synthetic_tamper_detection() {
+    use binlens::types::AuthenticodeStatus;
+    use std::path::Path;
+
+    let test_path = r#"C:\Program Files\Adobe\Adobe Creative Cloud Experience\CCXProcess.exe"#;
+    if !Path::new(test_path).exists() {
+        eprintln!(
+            "Skipping real binary test because {} is not present",
+            test_path
+        );
+        return;
+    }
+
+    let original_data = std::fs::read(test_path).expect("Failed to read test binary");
+
+    // 1. Verify original authentic binary
+    let report = parse_pe(&original_data, "CCXProcess.exe").expect("Must parse valid PE");
+    assert!(
+        report.authenticode.is_some(),
+        "Must detect Authenticode signature"
+    );
+    let auth = report.authenticode.unwrap();
+    assert_eq!(
+        auth.status,
+        AuthenticodeStatus::Valid,
+        "Authentic binary hash must match signature"
+    );
+    assert_eq!(auth.digest_algorithm, "SHA256");
+    assert_eq!(auth.calculated_digest, auth.expected_digest);
+    assert!(
+        auth.signer_certificate.is_some(),
+        "Must extract signer certificate"
+    );
+    let signer = auth.signer_certificate.unwrap();
+    assert!(
+        signer.subject.contains("Adobe"),
+        "Signer subject must contain Adobe"
+    );
+    assert!(!signer.serial_number.is_empty());
+    assert!(!auth.certificates.is_empty());
+
+    // 2. Tamper with a single byte in section 0 (.text)
+    let mut tampered_data = original_data.clone();
+    let sec0 = &report.sections[0];
+    let offset_to_corrupt = sec0.raw_offset as usize + 0x10;
+    tampered_data[offset_to_corrupt] ^= 0xFF; // Flip all bits of one byte in executable code
+
+    let tampered_report =
+        parse_pe(&tampered_data, "CCXProcess_tampered.exe").expect("Must parse tampered PE");
+    assert!(
+        tampered_report.authenticode.is_some(),
+        "Must still detect Authenticode structure"
+    );
+    let tampered_auth = tampered_report.authenticode.unwrap();
+    assert_eq!(
+        tampered_auth.status,
+        AuthenticodeStatus::HashMismatch,
+        "Tampered binary MUST trigger HashMismatch!"
+    );
+    assert_ne!(
+        tampered_auth.calculated_digest, tampered_auth.expected_digest,
+        "Calculated hash must deviate from expected hash on tampering"
+    );
+
+    // 3. Corrupt ASN.1 signature table to test Malformed detection
+    let mut malformed_data = original_data.clone();
+    // In PE header, find the Security Directory and corrupt its payload
+    let pe_off = u32::from_le_bytes([
+        malformed_data[0x3c],
+        malformed_data[0x3d],
+        malformed_data[0x3e],
+        malformed_data[0x3f],
+    ]) as usize;
+    let sec_dir_entry = pe_off + 0x18 + 112 + 32; // x64 DataDirectory[4]
+    let sec_dir_rva = u32::from_le_bytes([
+        malformed_data[sec_dir_entry],
+        malformed_data[sec_dir_entry + 1],
+        malformed_data[sec_dir_entry + 2],
+        malformed_data[sec_dir_entry + 3],
+    ]) as usize;
+    // Overwrite the PKCS#7 table bytes with garbage
+    if sec_dir_rva > 0 && sec_dir_rva + 64 < malformed_data.len() {
+        for b in &mut malformed_data[sec_dir_rva + 8..sec_dir_rva + 64] {
+            *b = 0xFF; // invalid DER tags
+        }
+        let malformed_report = parse_pe(&malformed_data, "CCXProcess_malformed.exe")
+            .expect("Must parse PE with corrupt cert");
+        assert_eq!(
+            malformed_report.authenticode.unwrap().status,
+            AuthenticodeStatus::Malformed,
+            "Corrupted ASN.1 DER must yield Malformed status"
+        );
+    }
+}
+
+#[test]
+fn test_authenticode_unsigned_pe_returns_none() {
+    let mut pe = vec![0u8; 1024];
+    pe[0..2].copy_from_slice(b"MZ");
+    pe[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes()); // e_lfanew = 0x80
+
+    let pe_off = 0x80;
+    pe[pe_off..pe_off + 4].copy_from_slice(b"PE\0\0");
+    pe[pe_off + 4..pe_off + 6].copy_from_slice(&0x8664u16.to_le_bytes()); // x86_64
+    pe[pe_off + 6..pe_off + 8].copy_from_slice(&0u16.to_le_bytes()); // 0 sections
+    pe[pe_off + 20..pe_off + 22].copy_from_slice(&0xF0u16.to_le_bytes()); // Opt header size
+
+    let opt_off = pe_off + 24;
+    pe[opt_off..opt_off + 2].copy_from_slice(&0x20Bu16.to_le_bytes()); // PE32+ (64-bit)
+    // Security directory at opt_off + 112 + 32 (Data Directory 4): left as 0 RVA, 0 Size
+
+    let report = parse_pe(&pe, "unsigned.exe").expect("Must parse unsigned PE");
+    assert!(report.authenticode.is_none());
+    assert!(!report.mitigations.authenticode_signed);
 }

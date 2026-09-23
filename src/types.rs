@@ -99,6 +99,37 @@ pub struct DisassemblyEntry {
     pub op_str: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthenticodeStatus {
+    Valid,
+    HashMismatch,
+    Malformed,
+    NotSigned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CertificateInfo {
+    pub subject: String,
+    pub issuer: String,
+    pub serial_number: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuthenticodeReport {
+    pub is_signed: bool,
+    pub status: AuthenticodeStatus,
+    pub digest_algorithm: String,
+    pub expected_digest: String,
+    pub calculated_digest: String,
+    pub signer_certificate: Option<CertificateInfo>,
+    pub certificates: Vec<CertificateInfo>,
+    pub timestamp_signer: Option<CertificateInfo>,
+    pub timestamp_time: Option<String>,
+    pub program_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryReport {
     pub file_name: String,
@@ -119,6 +150,7 @@ pub struct BinaryReport {
     pub imphash: Option<String>,
     pub interesting_strings: Vec<CategorizedString>,
     pub entry_point_preview: Vec<DisassemblyEntry>,
+    pub authenticode: Option<AuthenticodeReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

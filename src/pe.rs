@@ -319,6 +319,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     };
 
     let entry_point_rva = read_u32(data, opt_hdr_offset + 16)? as u64;
+    let size_of_headers = read_u32(data, opt_hdr_offset + 60).unwrap_or(0x400) as usize;
 
     let (image_base, subsystem_val, dll_chars, data_dirs_offset) = if is_64 {
         let base = read_u64(data, opt_hdr_offset + 24).unwrap_or(0x140000000);
@@ -650,6 +651,20 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         16,
     );
 
+    let authenticode_report = crate::authenticode::verify_pe_authenticode(
+        data,
+        e_lfanew,
+        is_64,
+        cert_dir_offset,
+        cert_dir_size,
+        size_of_headers,
+        &raw_sections,
+    );
+
+    if let Some(ref auth) = authenticode_report {
+        mitigations.authenticode_signed = auth.is_signed;
+    }
+
     Some(BinaryReport {
         file_name: file_name.to_string(),
         file_size: data.len() as u64,
@@ -673,5 +688,6 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         imphash,
         interesting_strings: Vec::new(),
         entry_point_preview,
+        authenticode: authenticode_report,
     })
 }

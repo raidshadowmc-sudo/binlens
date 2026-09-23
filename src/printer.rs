@@ -1,5 +1,5 @@
 use crate::entropy::{entropy_badge, render_entropy_bar, render_entropy_histogram};
-use crate::types::{BinaryFormat, BinaryReport};
+use crate::types::{AuthenticodeStatus, BinaryFormat, BinaryReport};
 use colored::*;
 
 pub fn print_banner() {
@@ -241,7 +241,12 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64], show_all: bool) {
         println!("  └──────────────────────┴─────────────┴───────────┴─────────────────────────┘");
     }
 
-    // 8. Entry Point Disassembly Preview
+    // 8. Authenticode Digital Signature & Certificate Chain (PE)
+    if report.authenticode.is_some() {
+        print_authenticode_section(report);
+    }
+
+    // 9. Entry Point Disassembly Preview
     if !report.entry_point_preview.is_empty() {
         println!(
             "\n{}",
@@ -255,7 +260,7 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64], show_all: bool) {
         print_disassembly_table(&report.entry_point_preview);
     }
 
-    // 9. Interesting Indicators & Strings
+    // 10. Interesting Indicators & Strings
     if !report.interesting_strings.is_empty() {
         println!(
             "\n{}",
@@ -319,12 +324,7 @@ pub fn print_disassembly_table(entries: &[crate::types::DisassemblyEntry]) {
     );
 }
 
-fn print_checksec_row(name: &str, passed: bool, desc: &str) {
-    let status_str = if passed {
-        "  PASS ".green().bold()
-    } else {
-        "  FAIL ".red().bold()
-    };
+fn print_checksec_status_row(name: &str, status_str: ColoredString, desc: &str) {
     let formatted_desc = if desc.len() > 35 {
         format!("{}...", &desc[..32])
     } else {
@@ -334,6 +334,15 @@ fn print_checksec_row(name: &str, passed: bool, desc: &str) {
         "  │ {:<22} │ {} │ {:<35} │",
         name, status_str, formatted_desc
     );
+}
+
+fn print_checksec_row(name: &str, passed: bool, desc: &str) {
+    let status_str = if passed {
+        "  PASS ".green().bold()
+    } else {
+        "  FAIL ".red().bold()
+    };
+    print_checksec_status_row(name, status_str, desc);
 }
 
 fn print_checksec_table(report: &BinaryReport) {
@@ -418,11 +427,44 @@ fn print_checksec_table(report: &BinaryReport) {
             report.mitigations.cfg,
             "Indirect call target validation",
         );
-        print_checksec_row(
-            "Authenticode (Embedded)",
-            report.mitigations.authenticode_signed,
-            "Embedded PKCS#7 table",
-        );
+        if let Some(ref auth) = report.authenticode {
+            match auth.status {
+                AuthenticodeStatus::Valid => {
+                    print_checksec_status_row(
+                        "Authenticode",
+                        "  PASS ".green().bold(),
+                        "Valid (Hash Verified)",
+                    );
+                }
+                AuthenticodeStatus::HashMismatch => {
+                    print_checksec_status_row(
+                        "Authenticode",
+                        "  FAIL ".red().bold(),
+                        "TAMPERED (Hash Mismatch!)",
+                    );
+                }
+                AuthenticodeStatus::Malformed => {
+                    print_checksec_status_row(
+                        "Authenticode",
+                        "  WARN ".yellow().bold(),
+                        "Malformed PKCS#7 Table",
+                    );
+                }
+                AuthenticodeStatus::NotSigned => {
+                    print_checksec_status_row("Authenticode", "  FAIL ".red().bold(), "Not Signed");
+                }
+            }
+        } else {
+            print_checksec_row(
+                "Authenticode",
+                report.mitigations.authenticode_signed,
+                if report.mitigations.authenticode_signed {
+                    "Embedded PKCS#7 table"
+                } else {
+                    "No digital signature found"
+                },
+            );
+        }
     }
     print_checksec_row(
         "W^X (No RWX Sections)",
@@ -432,12 +474,121 @@ fn print_checksec_table(report: &BinaryReport) {
     println!("  └────────────────────────┴───────────┴─────────────────────────────────────┘");
 }
 
+pub fn print_authenticode_section(report: &BinaryReport) {
+    let Some(ref auth) = report.authenticode else {
+        return;
+    };
+    if !auth.is_signed && auth.status == AuthenticodeStatus::NotSigned {
+        return;
+    }
+
+    println!(
+        "\n{}",
+        "─── [ AUTHENTICODE SIGNATURE & CERTIFICATES ] ────────────────────────────────".bold()
+    );
+
+    let status_badge = match auth.status {
+        AuthenticodeStatus::Valid => "[✔ VALID] Image hash verified against signature"
+            .green()
+            .bold(),
+        AuthenticodeStatus::HashMismatch => {
+            "[✖ TAMPERED] Binary image hash does NOT match signature digest!"
+                .red()
+                .bold()
+        }
+        AuthenticodeStatus::Malformed => {
+            "[⚠ MALFORMED] Security directory contains invalid or corrupt ASN.1 DER"
+                .yellow()
+                .bold()
+        }
+        AuthenticodeStatus::NotSigned => "[-] Unsigned".normal(),
+    };
+    println!("  Status:          {}", status_badge);
+
+    if !auth.digest_algorithm.is_empty() {
+        println!("  Algorithm:       {}", auth.digest_algorithm.cyan().bold());
+    }
+    if !auth.expected_digest.is_empty() {
+        println!("  Expected Digest: {}", auth.expected_digest.cyan());
+    }
+    if !auth.calculated_digest.is_empty() {
+        let calc_str = if auth.status == AuthenticodeStatus::Valid {
+            auth.calculated_digest.green()
+        } else if auth.status == AuthenticodeStatus::HashMismatch {
+            auth.calculated_digest.red().bold()
+        } else {
+            auth.calculated_digest.normal()
+        };
+        println!("  Calculated Hash: {}", calc_str);
+    }
+    if let Some(ref prog) = auth.program_name {
+        println!("  Program Name:    {}", prog.white().bold());
+    }
+
+    // Signer Certificate
+    if let Some(ref signer) = auth.signer_certificate {
+        println!("\n  Signer Certificate:");
+        println!("    • Subject:       {}", signer.subject.bold());
+        if !signer.issuer.is_empty() && signer.issuer != signer.subject {
+            println!("    • Issuer:        {}", signer.issuer);
+        }
+        println!("    • Serial Number: {}", signer.serial_number);
+        if let (Some(from), Some(to)) = (&signer.valid_from, &signer.valid_to) {
+            println!("    • Validity:      {} to {}", from, to);
+        }
+    }
+
+    // Timestamp Info
+    if auth.timestamp_time.is_some() || auth.timestamp_signer.is_some() {
+        println!("\n  Countersignature / Timestamp (RFC 3161):");
+        if let Some(ref time) = auth.timestamp_time {
+            println!("    • Timestamp:     {}", time.yellow().bold());
+        }
+        if let Some(ref ts_signer) = auth.timestamp_signer {
+            println!("    • TSA Signer:    {}", ts_signer.subject);
+            if !ts_signer.issuer.is_empty() {
+                println!("    • TSA Issuer:    {}", ts_signer.issuer);
+            }
+        }
+    }
+
+    // Additional Certificates in Chain
+    if auth.certificates.len() > 1 {
+        let signer_ser = auth
+            .signer_certificate
+            .as_ref()
+            .map(|s| s.serial_number.as_str());
+        let chain: Vec<_> = auth
+            .certificates
+            .iter()
+            .filter(|c| signer_ser != Some(&c.serial_number))
+            .collect();
+        if !chain.is_empty() {
+            println!(
+                "\n  Certificate Chain ({} intermediate/root CA(s)):",
+                chain.len()
+            );
+            for (idx, cert) in chain.iter().enumerate() {
+                println!("    [{}] {}", idx + 1, cert.subject.dimmed());
+                if !cert.issuer.is_empty() && cert.issuer != cert.subject {
+                    println!("        Issuer: {}", cert.issuer.dimmed());
+                }
+            }
+        }
+    }
+}
+
 pub fn print_checksec_only(report: &BinaryReport) {
     println!(
         "\n{}",
         format!("Checksec Audit for: {}", report.file_name).bold()
     );
     print_checksec_table(report);
+    if let Some(ref auth) = report.authenticode {
+        if auth.is_signed {
+            print_authenticode_section(report);
+        }
+    }
 }
 
 pub fn print_disasm_only(report: &BinaryReport) {

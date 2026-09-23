@@ -284,7 +284,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 41 automated unit, regression, and cross-platform differential tests:
+* **Automated Test Suite**: Includes 44 automated unit, regression, and cross-platform differential tests:
   ```bash
   cargo test
   ```
@@ -297,7 +297,7 @@ cargo install --path .
 - [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
 - [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 - [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
-- [ ] Cryptographic Authenticode Validation: Full X.509 certificate chain validation against system trust stores and PE image hash verification.
+- [x] Cryptographic Authenticode Validation: Safe ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) with tamper detection.
 - [ ] YARA Rule Integration: Native rule compilation and matching against mapped binary memory.
 
 ---

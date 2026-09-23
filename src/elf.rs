@@ -590,5 +590,6 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         imphash: None,
         interesting_strings: Vec::new(),
         entry_point_preview,
+        authenticode: None,
     })
 }

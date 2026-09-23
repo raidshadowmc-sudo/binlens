@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
+pub mod authenticode;
 pub mod diff;
 pub mod disasm;
 pub mod elf;

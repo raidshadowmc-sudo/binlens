@@ -707,5 +707,6 @@ fn parse_single_macho(
         imphash: None,
         interesting_strings: Vec::new(),
         entry_point_preview,
+        authenticode: None,
     })
 }

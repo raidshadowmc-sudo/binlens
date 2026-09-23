@@ -161,6 +161,7 @@ fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> t
             imphash: None,
             interesting_strings: Vec::new(),
             entry_point_preview: Vec::new(),
+            authenticode: None,
         }
     };
 
