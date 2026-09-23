@@ -689,5 +689,6 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         interesting_strings: Vec::new(),
         entry_point_preview,
         authenticode: authenticode_report,
+        yara: None,
     })
 }

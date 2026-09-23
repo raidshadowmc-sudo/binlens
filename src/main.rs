@@ -1,6 +1,6 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
-use binlens::{diff, elf, entropy, macho, pe, printer, strings, types};
+use binlens::{diff, elf, entropy, macho, pe, printer, strings, types, yara};
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::fs;
@@ -40,6 +40,10 @@ enum Commands {
         /// Dump all imports and exports (default: truncates long tables to 8 entries)
         #[arg(short, long)]
         all: bool,
+
+        /// Optional path to YARA rule file (.yar, .yara) or rules directory
+        #[arg(short, long)]
+        rules: Option<String>,
     },
 
     /// Dedicated entropy visualization with block-by-block ASCII terminal heatmap & histogram
@@ -93,6 +97,19 @@ enum Commands {
         /// Number of instructions to disassemble (default: 16)
         #[arg(short, long, default_value_t = 16)]
         count: usize,
+    },
+
+    /// Scan a binary against YARA rules or rule directories for signature & threat detection
+    Yara {
+        /// Target binary file path
+        file: String,
+
+        /// Path to YARA rule file (.yar, .yara) or directory containing rules
+        rules: String,
+
+        /// Dump all matched rules and strings without truncation
+        #[arg(short, long)]
+        all: bool,
     },
 }
 
@@ -162,6 +179,7 @@ fn analyze_binary_data(data: &[u8], file_name: &str, min_string_len: usize) -> t
             interesting_strings: Vec::new(),
             entry_point_preview: Vec::new(),
             authenticode: None,
+            yara: None,
         }
     };
 
@@ -178,6 +196,7 @@ fn main() {
             block_size,
             min_string,
             all,
+            rules,
         } => {
             let (_f, mmap, fallback) = match map_or_read_file(&file) {
                 Ok(res) => res,
@@ -187,7 +206,21 @@ fn main() {
                 }
             };
             let data = get_data_slice(&mmap, &fallback);
-            let report = analyze_binary_data(data, &file, min_string);
+            let mut report = analyze_binary_data(data, &file, min_string);
+
+            if let Some(ref rule_path) = rules {
+                let scanner = match yara::compile_rules_from_path(Path::new(rule_path)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("{} {}", "YARA Compilation Error:".red().bold(), e);
+                        std::process::exit(1);
+                    }
+                };
+                match yara::scan_bytes_with_scanner(data, &scanner) {
+                    Ok(yara_rep) => report.yara = Some(yara_rep),
+                    Err(e) => eprintln!("{} {}", "YARA Scan Warning:".yellow().bold(), e),
+                }
+            }
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -392,6 +425,39 @@ fn main() {
             } else {
                 printer::print_banner();
                 printer::print_disasm_only(&report);
+            }
+        }
+
+        Commands::Yara { file, rules, all } => {
+            let (_f, mmap, fallback) = match map_or_read_file(&file) {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            };
+            let data = get_data_slice(&mmap, &fallback);
+
+            let scanner = match yara::compile_rules_from_path(Path::new(&rules)) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{} {}", "YARA Compilation Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            };
+
+            let yara_report = match yara::scan_bytes_with_scanner(data, &scanner) {
+                Ok(rep) => rep,
+                Err(e) => {
+                    eprintln!("{} {}", "YARA Scan Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            };
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&yara_report).unwrap());
+            } else {
+                printer::print_yara_standalone(&file, &yara_report, all);
             }
         }
     }

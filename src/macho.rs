@@ -708,5 +708,6 @@ fn parse_single_macho(
         interesting_strings: Vec::new(),
         entry_point_preview,
         authenticode: None,
+        yara: None,
     })
 }

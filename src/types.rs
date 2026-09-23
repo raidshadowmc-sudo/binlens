@@ -151,6 +151,30 @@ pub struct BinaryReport {
     pub interesting_strings: Vec<CategorizedString>,
     pub entry_point_preview: Vec<DisassemblyEntry>,
     pub authenticode: Option<AuthenticodeReport>,
+    pub yara: Option<YaraMatchReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct YaraStringMatch {
+    pub name: String,
+    pub offset: usize,
+    pub length: usize,
+    pub data_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct YaraRuleMatch {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub tags: Vec<String>,
+    pub metadatas: Vec<(String, String)>,
+    pub matches: Vec<YaraStringMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct YaraMatchReport {
+    pub rules_matched: Vec<YaraRuleMatch>,
+    pub total_rules_evaluated: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -10,3 +10,4 @@ pub mod pe;
 pub mod printer;
 pub mod strings;
 pub mod types;
+pub mod yara;

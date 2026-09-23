@@ -394,6 +394,7 @@ fn test_diff_headers_distinguish_identical_basenames() {
         interesting_strings: vec![],
         entry_point_preview: vec![],
         authenticode: None,
+        yara: None,
     };
     let mut report_b = report_a.clone();
     report_b.file_name = "target/release/app.exe".to_string();
@@ -811,6 +812,7 @@ fn test_structured_diff_report() {
         interesting_strings: Vec::new(),
         entry_point_preview: Vec::new(),
         authenticode: None,
+        yara: None,
     };
 
     let mut report_b = report_a.clone();
@@ -1080,6 +1082,7 @@ fn test_diff_stack_canary_and_fortify_drift() {
         interesting_strings: vec![],
         entry_point_preview: vec![],
         authenticode: None,
+        yara: None,
     };
 
     let mut b = a.clone();
@@ -1655,4 +1658,154 @@ fn test_authenticode_unsigned_pe_returns_none() {
     let report = parse_pe(&pe, "unsigned.exe").expect("Must parse unsigned PE");
     assert!(report.authenticode.is_none());
     assert!(!report.mitigations.authenticode_signed);
+}
+
+#[test]
+fn test_yara_rule_compilation_and_matching() {
+    let rule_str = r#"
+rule DetectSuspiciousPayload : malware suspicious
+{
+    meta:
+        description = "Detects test reverse shell signature"
+        severity = 9
+        is_active = true
+    strings:
+        $shell = "cmd.exe /c powershell" ascii
+        $beacon = { 48 89 5C 24 ?? 48 89 6C 24 }
+    condition:
+        $shell or $beacon
+}
+"#;
+
+    let scanner = binlens::yara::compile_rules_from_str(rule_str)
+        .expect("Valid YARA rule must compile cleanly");
+
+    let payload = b"Random preamble data before cmd.exe /c powershell -enc AAAA trailing data";
+    let report =
+        binlens::yara::scan_bytes_with_scanner(payload, &scanner).expect("Scan must succeed");
+
+    assert_eq!(report.rules_matched.len(), 1);
+    assert_eq!(report.total_rules_evaluated, 1);
+
+    let matched = &report.rules_matched[0];
+    assert_eq!(matched.name, "DetectSuspiciousPayload");
+    assert!(matched.tags.contains(&"malware".to_string()));
+    assert!(matched.tags.contains(&"suspicious".to_string()));
+
+    // Check metadata
+    let desc_meta = matched
+        .metadatas
+        .iter()
+        .find(|(k, _)| k == "description")
+        .expect("Description metadata must exist");
+    assert_eq!(desc_meta.1, "Detects test reverse shell signature");
+
+    let sev_meta = matched
+        .metadatas
+        .iter()
+        .find(|(k, _)| k == "severity")
+        .expect("Severity metadata must exist");
+    assert_eq!(sev_meta.1, "9");
+
+    let act_meta = matched
+        .metadatas
+        .iter()
+        .find(|(k, _)| k == "is_active")
+        .expect("is_active metadata must exist");
+    assert_eq!(act_meta.1, "true");
+
+    // Check string match
+    assert_eq!(matched.matches.len(), 1);
+    let str_match = &matched.matches[0];
+    assert_eq!(str_match.name, "$shell");
+    assert_eq!(str_match.offset, 28);
+    assert_eq!(str_match.length, 21);
+    assert!(str_match.data_preview.contains("cmd.exe /c powershell"));
+}
+
+#[test]
+fn test_yara_rule_syntax_error() {
+    let invalid_rule = "rule Broken { condition: invalid_identifier_xyz }";
+    let res = binlens::yara::compile_rules_from_str(invalid_rule);
+    assert!(res.is_err(), "Invalid YARA syntax must produce Err");
+}
+
+#[test]
+fn test_yara_rule_no_match() {
+    let rule_str = r#"
+rule SpecificPattern
+{
+    strings:
+        $needle = "NON_EXISTENT_MAGIC_STRING_12345"
+    condition:
+        $needle
+}
+"#;
+    let scanner = binlens::yara::compile_rules_from_str(rule_str).expect("Rule must compile");
+    let data = b"This is innocent text without the magic needle.";
+    let report = binlens::yara::scan_bytes_with_scanner(data, &scanner).expect("Scan must succeed");
+
+    assert_eq!(report.rules_matched.len(), 0);
+    assert_eq!(report.total_rules_evaluated, 1);
+}
+
+#[test]
+fn test_yara_from_file_and_dir() {
+    let tmp_dir = std::env::temp_dir().join(format!("binlens_yara_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    let file_path = tmp_dir.join("test_rule.yar");
+    let rule_content = r#"
+rule TempFileRule
+{
+    strings:
+        $sig = "BINLENS_TEST_SIGNATURE"
+    condition:
+        $sig
+}
+"#;
+    std::fs::write(&file_path, rule_content).expect("Write temp rule file");
+
+    // Test compiling from file
+    let scanner_file =
+        binlens::yara::compile_rules_from_path(&file_path).expect("Compile from file must work");
+    let test_bytes = b"header BINLENS_TEST_SIGNATURE footer";
+    let rep_file = binlens::yara::scan_bytes_with_scanner(test_bytes, &scanner_file)
+        .expect("Scan from file rule must succeed");
+    assert_eq!(rep_file.rules_matched.len(), 1);
+
+    // Test compiling from directory
+    let scanner_dir =
+        binlens::yara::compile_rules_from_path(&tmp_dir).expect("Compile from directory must work");
+    let rep_dir = binlens::yara::scan_bytes_with_scanner(test_bytes, &scanner_dir)
+        .expect("Scan from dir rule must succeed");
+    assert_eq!(rep_dir.rules_matched.len(), 1);
+
+    // Clean up
+    let _ = std::fs::remove_file(&file_path);
+    let _ = std::fs::remove_dir(&tmp_dir);
+}
+
+#[test]
+fn test_yara_json_serialization() {
+    let report = binlens::types::YaraMatchReport {
+        total_rules_evaluated: 5,
+        rules_matched: vec![binlens::types::YaraRuleMatch {
+            name: "TestRule".to_string(),
+            namespace: Some("malware_feed".to_string()),
+            tags: vec!["c2".to_string()],
+            metadatas: vec![("author".to_string(), "analyst".to_string())],
+            matches: vec![binlens::types::YaraStringMatch {
+                name: "$a".to_string(),
+                offset: 100,
+                length: 16,
+                data_preview: "\"beacon_cmd\"".to_string(),
+            }],
+        }],
+    };
+
+    let json_str = serde_json::to_string_pretty(&report).expect("Serialize YARA report");
+    assert!(json_str.contains("TestRule"));
+    assert!(json_str.contains("malware_feed"));
+    assert!(json_str.contains("beacon_cmd"));
 }

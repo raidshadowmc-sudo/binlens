@@ -244,7 +244,8 @@ Compares two executable binaries side-by-side:
 
 | Command | Syntax | Description |
 | :--- | :--- | :--- |
-| **`scan`** | `binlens scan <FILE> [-a, --all]` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, entry point disassembly, and indicators. Use `--all` to dump full symbol tables. |
+| **`scan`** | `binlens scan <FILE> [-a, --all] [-r, --rules <PATH>]` | Full binary report: metadata, entropy heatmap, checksec, sections, imports, Rich Header, entry point disassembly, indicators, and optional YARA rule scanning. Use `--all` to dump full symbol tables. |
+| **`yara`** | `binlens yara <FILE> <RULE_PATH> [-a, --all]` | Evaluates target binary against YARA rule file (`.yar`, `.yara`) or recursive directory of rules with match offsets, tags, and metadata. |
 | **`disasm`** | `binlens disasm <FILE> [--count <N>]` | Decodes Entry Point instructions for immediate preamble, unpacker, or hook triage (default: 16 instructions). |
 | **`checksec`** | `binlens checksec <FILE>` | Security mitigation audit (ASLR, DEP, CFG, SafeSEH, W^X, Authenticode, Stack Canary, FORTIFY, RPATH). |
 | **`entropy`** | `binlens entropy <FILE> [--width <N>] [--block-size <BYTES>]` | Computes continuous Shannon entropy distribution and histogram. |
@@ -270,6 +271,10 @@ cargo build --release
 The compiled binary will be located at:
 * Windows: `target/release/binlens.exe`
 * Linux: `target/release/binlens`
+* macOS: `target/release/binlens`
+
+### Prebuilt Binaries (GitHub Releases)
+Optimized standalone binaries and SHA-256 checksums for Windows (`x86_64`), Linux (`x86_64`), and macOS (`x86_64`, Apple Silicon `aarch64`) are automatically compiled and published on every release under [GitHub Releases](https://github.com/raidshadowmc-sudo/binlens/releases).
 
 ### Install to System PATH
 ```bash
@@ -284,7 +289,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 44 automated unit, regression, and cross-platform differential tests:
+* **Automated Test Suite**: Includes 49 automated unit, regression, and cross-platform differential tests:
   ```bash
   cargo test
   ```
@@ -298,7 +303,7 @@ cargo install --path .
 - [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 - [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
 - [x] Cryptographic Authenticode Validation: Safe ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) with tamper detection.
-- [ ] YARA Rule Integration: Native rule compilation and matching against mapped binary memory.
+- [x] YARA Rule Integration: Native pure-Rust rule compilation and scanning against mapped binary memory with tags, namespaces, and string match offsets.
 
 ---
 

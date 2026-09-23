@@ -285,6 +285,11 @@ pub fn print_report(report: &BinaryReport, blocks: &[f64], show_all: bool) {
         }
     }
 
+    // 11. YARA Rule Matches
+    if let Some(ref yara) = report.yara {
+        print_yara_section(yara, show_all);
+    }
+
     println!(
         "\n{}",
         "════════════════════════════════════════════════════════════════════════════════".cyan()
@@ -606,4 +611,109 @@ pub fn print_disasm_only(report: &BinaryReport) {
     } else {
         print_disassembly_table(&report.entry_point_preview);
     }
+}
+
+pub fn print_yara_section(report: &crate::types::YaraMatchReport, show_all: bool) {
+    println!(
+        "\n{}",
+        "─── [ YARA RULE MATCHES ] ────────────────────────────────────────────────────".bold()
+    );
+    if report.rules_matched.is_empty() {
+        println!("  {}", "No YARA rules matched.".dimmed());
+        return;
+    }
+
+    println!(
+        "  Matched {} rule(s) (out of {} evaluated):",
+        report.rules_matched.len().to_string().red().bold(),
+        report.total_rules_evaluated
+    );
+
+    let rule_limit = if show_all {
+        report.rules_matched.len()
+    } else {
+        10
+    };
+    for rule in report.rules_matched.iter().take(rule_limit) {
+        let tag_str = if rule.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", rule.tags.join(", ").yellow())
+        };
+        let ns_str = if let Some(ref ns) = rule.namespace {
+            format!(" (namespace: {})", ns.cyan())
+        } else {
+            String::new()
+        };
+
+        println!(
+            "\n  {} {}{}{}",
+            "▶ [MATCH]".red().bold(),
+            rule.name.bold(),
+            tag_str,
+            ns_str
+        );
+
+        if !rule.metadatas.is_empty() {
+            println!("    Metadata:");
+            for (k, v) in &rule.metadatas {
+                println!("      • {:<16} : {}", k.dimmed(), v);
+            }
+        }
+
+        if !rule.matches.is_empty() {
+            println!("    String Matches ({} hit(s)):", rule.matches.len());
+            let match_limit = if show_all { rule.matches.len() } else { 5 };
+            for m in rule.matches.iter().take(match_limit) {
+                println!(
+                    "      • 0x{:<8X} ({:>3} B) {:<12} : {}",
+                    m.offset,
+                    m.length,
+                    m.name.cyan(),
+                    m.data_preview
+                );
+            }
+            if !show_all && rule.matches.len() > 5 {
+                println!(
+                    "        ... and {} more string occurrences (use --all to dump all)",
+                    rule.matches.len() - 5
+                );
+            }
+        }
+    }
+
+    if !show_all && report.rules_matched.len() > 10 {
+        println!(
+            "\n  ... and {} more matched rules (use --all to dump all matches)",
+            report.rules_matched.len() - 10
+        );
+    }
+}
+
+pub fn print_yara_standalone(
+    target_file: &str,
+    report: &crate::types::YaraMatchReport,
+    show_all: bool,
+) {
+    print_banner();
+    println!("┌──────────────────────────────────────────────────────────────────────────────┐");
+    println!("│ {:<76} │", format!("YARA SCAN: {}", target_file).bold());
+    println!("├──────────────────────────────────────────────────────────────────────────────┤");
+    println!("│ Rules Evaluated: {:<59} │", report.total_rules_evaluated);
+    let match_summary = if report.rules_matched.is_empty() {
+        "0 matches (clean)".green().bold()
+    } else {
+        format!("{} rule(s) triggered alert", report.rules_matched.len())
+            .red()
+            .bold()
+    };
+    println!("│ Scan Verdict:    {:<59} │", match_summary);
+    println!("└──────────────────────────────────────────────────────────────────────────────┘");
+
+    print_yara_section(report, show_all);
+
+    println!(
+        "\n{}",
+        "════════════════════════════════════════════════════════════════════════════════".cyan()
+    );
 }
