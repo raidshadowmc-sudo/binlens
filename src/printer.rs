@@ -434,18 +434,18 @@ fn print_checksec_table(report: &BinaryReport) {
         );
         if let Some(ref auth) = report.authenticode {
             match auth.status {
-                AuthenticodeStatus::Valid => {
+                AuthenticodeStatus::DigestMatch => {
                     print_checksec_status_row(
                         "Authenticode",
                         "  PASS ".green().bold(),
-                        "Valid (Hash Verified)",
+                        "Digest Match (PE Hash Verified)",
                     );
                 }
-                AuthenticodeStatus::HashMismatch => {
+                AuthenticodeStatus::DigestMismatch => {
                     print_checksec_status_row(
                         "Authenticode",
                         "  FAIL ".red().bold(),
-                        "TAMPERED (Hash Mismatch!)",
+                        "Digest Mismatch (PE Tampered / Modified)",
                     );
                 }
                 AuthenticodeStatus::Malformed => {
@@ -493,11 +493,13 @@ pub fn print_authenticode_section(report: &BinaryReport) {
     );
 
     let status_badge = match auth.status {
-        AuthenticodeStatus::Valid => "[✔ VALID] Image hash verified against signature"
-            .green()
-            .bold(),
-        AuthenticodeStatus::HashMismatch => {
-            "[✖ TAMPERED] Binary image hash does NOT match signature digest!"
+        AuthenticodeStatus::DigestMatch => {
+            "[✔ DIGEST MATCH] PE image hash matches SpcIndirectData digest (Note: not full trust-chain/CA validation)"
+                .green()
+                .bold()
+        }
+        AuthenticodeStatus::DigestMismatch => {
+            "[✖ MISMATCH] Binary image hash does NOT match SpcIndirectData digest (tampered/modified)"
                 .red()
                 .bold()
         }
@@ -517,9 +519,9 @@ pub fn print_authenticode_section(report: &BinaryReport) {
         println!("  Expected Digest: {}", auth.expected_digest.cyan());
     }
     if !auth.calculated_digest.is_empty() {
-        let calc_str = if auth.status == AuthenticodeStatus::Valid {
+        let calc_str = if auth.status == AuthenticodeStatus::DigestMatch {
             auth.calculated_digest.green()
-        } else if auth.status == AuthenticodeStatus::HashMismatch {
+        } else if auth.status == AuthenticodeStatus::DigestMismatch {
             auth.calculated_digest.red().bold()
         } else {
             auth.calculated_digest.normal()

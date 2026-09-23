@@ -324,6 +324,7 @@ fn parse_single_macho(
     let mut entry_point_vaddr: u64 = 0;
     let mut entry_point_fileoff: u64 = 0;
     let mut text_vmaddr: u64 = 0;
+    let mut text_fileoff: u64 = 0;
 
     let mut symtab_info: Option<(usize, usize, usize, usize)> = None; // (symoff, nsyms, stroff, strsize)
 
@@ -350,7 +351,7 @@ fn parse_single_macho(
                         .to_string();
                     let vmaddr = read_u64(slice_data, cmd_offset + 24, be).unwrap_or(0);
                     let _vmsize = read_u64(slice_data, cmd_offset + 32, be).unwrap_or(0);
-                    let _fileoff = read_u64(slice_data, cmd_offset + 40, be).unwrap_or(0);
+                    let fileoff = read_u64(slice_data, cmd_offset + 40, be).unwrap_or(0);
                     let _filesize = read_u64(slice_data, cmd_offset + 48, be).unwrap_or(0);
                     let maxprot = read_u32(slice_data, cmd_offset + 56, be).unwrap_or(0);
                     let initprot = read_u32(slice_data, cmd_offset + 60, be).unwrap_or(0);
@@ -358,6 +359,7 @@ fn parse_single_macho(
 
                     if segname == "__TEXT" {
                         text_vmaddr = vmaddr;
+                        text_fileoff = fileoff;
                     }
 
                     // Check W^X on segment level: writable (2) and executable (4)
@@ -430,7 +432,7 @@ fn parse_single_macho(
                             .to_string();
                     let vmaddr = read_u32(slice_data, cmd_offset + 24, be).unwrap_or(0) as u64;
                     let _vmsize = read_u32(slice_data, cmd_offset + 28, be).unwrap_or(0) as u64;
-                    let _fileoff = read_u32(slice_data, cmd_offset + 32, be).unwrap_or(0) as u64;
+                    let fileoff = read_u32(slice_data, cmd_offset + 32, be).unwrap_or(0) as u64;
                     let _filesize = read_u32(slice_data, cmd_offset + 36, be).unwrap_or(0) as u64;
                     let maxprot = read_u32(slice_data, cmd_offset + 40, be).unwrap_or(0);
                     let initprot = read_u32(slice_data, cmd_offset + 44, be).unwrap_or(0);
@@ -438,6 +440,7 @@ fn parse_single_macho(
 
                     if segname == "__TEXT" {
                         text_vmaddr = vmaddr;
+                        text_fileoff = fileoff;
                     }
 
                     if (initprot & 2 != 0 && initprot & 4 != 0)
@@ -505,7 +508,8 @@ fn parse_single_macho(
                 if cmd_offset + 16 <= slice_data.len() {
                     let entryoff = read_u64(slice_data, cmd_offset + 8, be).unwrap_or(0);
                     entry_point_fileoff = entryoff;
-                    entry_point_vaddr = text_vmaddr.wrapping_add(entryoff);
+                    entry_point_vaddr =
+                        text_vmaddr.wrapping_add(entryoff.saturating_sub(text_fileoff));
                 }
             }
             LC_UNIXTHREAD | LC_THREAD => {

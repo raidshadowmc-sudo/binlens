@@ -375,8 +375,19 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 // DT_NEEDED
                 needed_indices.push(val);
             } else if tag == 5 && dynstr_offset.is_none() {
-                // DT_STRTAB
-                dynstr_offset = Some(val);
+                // DT_STRTAB: val is a Virtual Memory Address (VMA).
+                // In stripped ELFs without section headers, translate VMA to file offset via PT_LOAD segments.
+                let mut resolved_str_off = None;
+                for &(seg_vaddr, seg_offset, seg_filesz) in &load_segments {
+                    if (val as u64) >= seg_vaddr
+                        && (val as u64) < seg_vaddr.saturating_add(seg_filesz as u64)
+                    {
+                        let delta = (val as u64 - seg_vaddr) as usize;
+                        resolved_str_off = Some(seg_offset + delta);
+                        break;
+                    }
+                }
+                dynstr_offset = resolved_str_off.or(Some(val));
             } else if tag == 15 {
                 // DT_RPATH
                 rpath_idx = Some(val);

@@ -105,7 +105,8 @@ pub fn parse_tlv(slice: &[u8]) -> Option<DerElement<'_>> {
 pub fn parse_sequence(buf: &[u8]) -> Vec<DerElement<'_>> {
     let mut elements = Vec::new();
     let mut offset = 0;
-    while offset < buf.len() {
+    // DoS hardening: cap sequence elements to 4096 to prevent pathological allocations
+    while offset < buf.len() && elements.len() < 4096 {
         if let Some(elem) = parse_tlv(&buf[offset..]) {
             let step = elem.total_len();
             if step == 0 {
@@ -561,6 +562,53 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+fn compute_authenticode_hash<D: Digest>(
+    data: &[u8],
+    checksum_off: usize,
+    sec_dir_entry_offset: usize,
+    size_of_headers: usize,
+    sorted_sections: &[RawSection],
+    sec_dir_offset: usize,
+) -> String {
+    let mut hasher = D::new();
+
+    // 1. From byte 0 up to CheckSum
+    hasher.update(&data[..checksum_off]);
+
+    // 2. From after CheckSum (4 bytes skipped) up to Security Directory entry
+    hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
+
+    // 3. From after Security Directory entry (8 bytes skipped) up to size_of_headers
+    hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
+
+    // 4. Hash each section's raw data in sorted order
+    let mut last_end = size_of_headers;
+    for sec in sorted_sections {
+        let start = sec.pointer_to_raw_data as usize;
+        let raw_size = sec.size_of_raw_data as usize;
+        if start > 0 && raw_size > 0 && start < data.len() {
+            let end = (start + raw_size).min(data.len());
+            hasher.update(&data[start..end]);
+            if end > last_end {
+                last_end = end;
+            }
+        }
+    }
+
+    // 5. Hash trailing bytes before the certificate table (if any)
+    let limit = if sec_dir_offset > 0 && sec_dir_offset <= data.len() {
+        sec_dir_offset
+    } else {
+        data.len()
+    };
+
+    if limit > last_end {
+        hasher.update(&data[last_end..limit]);
+    }
+
+    hex_encode(&hasher.finalize())
+}
+
 pub fn calculate_pe_authenticode_hash(
     data: &[u8],
     pe_offset: usize,
@@ -570,161 +618,54 @@ pub fn calculate_pe_authenticode_hash(
     raw_sections: &[RawSection],
     algo: &str,
 ) -> Option<String> {
-    if pe_offset + 0x18 + 68 > data.len() {
-        return None;
-    }
-
-    let checksum_off = pe_offset + 0x18 + 64;
-    let data_dirs_offset = if is_64 {
-        pe_offset + 0x18 + 112
+    let opt_hdr_off = pe_offset + 24;
+    let checksum_off = opt_hdr_off + 64;
+    let sec_dir_entry_offset = if is_64 {
+        opt_hdr_off + 112 + 32
     } else {
-        pe_offset + 0x18 + 96
+        opt_hdr_off + 96 + 32
     };
-    let sec_dir_entry_offset = data_dirs_offset + 32;
 
-    if sec_dir_entry_offset + 8 > data.len() || size_of_headers > data.len() {
+    if checksum_off + 4 > data.len() || sec_dir_entry_offset + 8 > data.len() {
         return None;
     }
 
-    // Sort sections strictly in ascending order by pointer_to_raw_data
     let mut sorted_sections = raw_sections.to_vec();
     sorted_sections.sort_by_key(|s| s.pointer_to_raw_data);
 
-    // Initialize appropriate cryptographic hasher
     match algo.to_uppercase().as_str() {
-        "SHA256" => {
-            let mut hasher = Sha256::new();
-
-            // 1. From byte 0 up to CheckSum
-            hasher.update(&data[..checksum_off]);
-
-            // 2. From after CheckSum (4 bytes skipped) up to Security Directory entry
-            hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
-
-            // 3. From after Security Directory entry (8 bytes skipped) up to size_of_headers
-            hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
-
-            // 4. Hash each section's raw data in sorted order
-            let mut last_end = size_of_headers;
-            for sec in &sorted_sections {
-                let start = sec.pointer_to_raw_data as usize;
-                let raw_size = sec.size_of_raw_data as usize;
-                if start > 0 && raw_size > 0 && start < data.len() {
-                    let end = (start + raw_size).min(data.len());
-                    hasher.update(&data[start..end]);
-                    if end > last_end {
-                        last_end = end;
-                    }
-                }
-            }
-
-            // 5. Hash trailing bytes before the certificate table (if any)
-            let limit = if sec_dir_offset > 0 && sec_dir_offset <= data.len() {
-                sec_dir_offset
-            } else {
-                data.len()
-            };
-
-            if limit > last_end {
-                hasher.update(&data[last_end..limit]);
-            }
-
-            Some(hex_encode(&hasher.finalize()))
-        }
-        "SHA1" => {
-            let mut hasher = Sha1::new();
-
-            hasher.update(&data[..checksum_off]);
-            hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
-            hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
-
-            let mut last_end = size_of_headers;
-            for sec in &sorted_sections {
-                let start = sec.pointer_to_raw_data as usize;
-                let raw_size = sec.size_of_raw_data as usize;
-                if start > 0 && raw_size > 0 && start < data.len() {
-                    let end = (start + raw_size).min(data.len());
-                    hasher.update(&data[start..end]);
-                    if end > last_end {
-                        last_end = end;
-                    }
-                }
-            }
-
-            let limit = if sec_dir_offset > 0 && sec_dir_offset <= data.len() {
-                sec_dir_offset
-            } else {
-                data.len()
-            };
-
-            if limit > last_end {
-                hasher.update(&data[last_end..limit]);
-            }
-
-            Some(hex_encode(&hasher.finalize()))
-        }
-        "SHA384" => {
-            let mut hasher = Sha384::new();
-            hasher.update(&data[..checksum_off]);
-            hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
-            hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
-
-            let mut last_end = size_of_headers;
-            for sec in &sorted_sections {
-                let start = sec.pointer_to_raw_data as usize;
-                let raw_size = sec.size_of_raw_data as usize;
-                if start > 0 && raw_size > 0 && start < data.len() {
-                    let end = (start + raw_size).min(data.len());
-                    hasher.update(&data[start..end]);
-                    if end > last_end {
-                        last_end = end;
-                    }
-                }
-            }
-
-            let limit = if sec_dir_offset > 0 && sec_dir_offset <= data.len() {
-                sec_dir_offset
-            } else {
-                data.len()
-            };
-
-            if limit > last_end {
-                hasher.update(&data[last_end..limit]);
-            }
-
-            Some(hex_encode(&hasher.finalize()))
-        }
-        "SHA512" => {
-            let mut hasher = Sha512::new();
-            hasher.update(&data[..checksum_off]);
-            hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
-            hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
-
-            let mut last_end = size_of_headers;
-            for sec in &sorted_sections {
-                let start = sec.pointer_to_raw_data as usize;
-                let raw_size = sec.size_of_raw_data as usize;
-                if start > 0 && raw_size > 0 && start < data.len() {
-                    let end = (start + raw_size).min(data.len());
-                    hasher.update(&data[start..end]);
-                    if end > last_end {
-                        last_end = end;
-                    }
-                }
-            }
-
-            let limit = if sec_dir_offset > 0 && sec_dir_offset <= data.len() {
-                sec_dir_offset
-            } else {
-                data.len()
-            };
-
-            if limit > last_end {
-                hasher.update(&data[last_end..limit]);
-            }
-
-            Some(hex_encode(&hasher.finalize()))
-        }
+        "SHA256" => Some(compute_authenticode_hash::<Sha256>(
+            data,
+            checksum_off,
+            sec_dir_entry_offset,
+            size_of_headers,
+            &sorted_sections,
+            sec_dir_offset,
+        )),
+        "SHA1" => Some(compute_authenticode_hash::<Sha1>(
+            data,
+            checksum_off,
+            sec_dir_entry_offset,
+            size_of_headers,
+            &sorted_sections,
+            sec_dir_offset,
+        )),
+        "SHA384" => Some(compute_authenticode_hash::<Sha384>(
+            data,
+            checksum_off,
+            sec_dir_entry_offset,
+            size_of_headers,
+            &sorted_sections,
+            sec_dir_offset,
+        )),
+        "SHA512" => Some(compute_authenticode_hash::<Sha512>(
+            data,
+            checksum_off,
+            sec_dir_entry_offset,
+            size_of_headers,
+            &sorted_sections,
+            sec_dir_offset,
+        )),
         _ => None,
     }
 }
@@ -804,9 +745,9 @@ pub fn verify_pe_authenticode(
     let status = if calculated_digest.is_empty() {
         AuthenticodeStatus::Malformed
     } else if calculated_digest.eq_ignore_ascii_case(&signed_data_info.expected_digest) {
-        AuthenticodeStatus::Valid
+        AuthenticodeStatus::DigestMatch
     } else {
-        AuthenticodeStatus::HashMismatch
+        AuthenticodeStatus::DigestMismatch
     };
 
     // Match signer certificate by serial number from SignerInfo, or fallback to first certificate

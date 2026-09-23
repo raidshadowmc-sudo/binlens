@@ -197,7 +197,7 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
 * **W^X Enforcement (No RWX Sections)**:
   * Scans section headers for concurrently writable and executable characteristics (`IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE` on PE; `SHF_WRITE | SHF_EXECINSTR` on ELF).
 * **Authenticode Presence**:
-  * Inspects PE Security Data Directory for `WIN_CERTIFICATE` / PKCS#7 signed data structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`).
+  * Authenticode: Inspects PE Security Data Directory for `WIN_CERTIFICATE` / PKCS#7 SignedData structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`), extracts signer certificates and metadata, and computes the 5-phase Authenticode PE image hash (SHA-256, SHA-1, SHA-384, SHA-512) to verify binary integrity against the embedded `SpcIndirectDataContent` digest. (Note: verifies PE image integrity and detects tampering; full external root CA trust-chain / CRL verification is not included).
 
 ### 2. Shannon Entropy Heatmap & Packing Detection
 * Computes chunked Shannon entropy across configurable intervals (default: 512 bytes).
@@ -233,8 +233,8 @@ Compares two executable binaries side-by-side:
   * High-risk system APIs and command execution strings (`cmd.exe`, `powershell.exe`, `VirtualAlloc`).
 
 ### 7. Entry Point Disassembly Preview (`disasm`)
-* Built on `iced-x86` for robust, high-performance x86 and x86_64 instruction decoding.
-* Automatically resolves the binary's Entry Point address to raw file offset across both PE (RVA $\to$ Section Raw Data) and ELF (VMA $\to$ PT_LOAD segment).
+* Built on `iced-x86` for robust, high-performance x86 and x86_64 instruction decoding. (Supported for x86/x86_64 PE, ELF, and Mach-O binaries; ARM64 Mach-O binaries display headers, load commands, sections, and mitigations).
+* Automatically resolves the binary's Entry Point address to raw file offset across PE (RVA $\to$ Section Raw Data), ELF (VMA $\to$ PT_LOAD segment), and Mach-O (`LC_MAIN` / `LC_UNIXTHREAD`).
 * Decodes the initial basic-block execution preamble, formatting addresses, opcode byte streams, and disassembly mnemonics.
 * Assists reverse engineers in immediately identifying compiler calling conventions, function frames, packing stubs (`call $+5; pop reg`), and hook trampolines (`jmp`).
 
@@ -289,7 +289,7 @@ cargo install --path .
 * **Memory Safety**: Written entirely in safe Rust with zero `unsafe` blocks in format parsers.
 * **Bounds & DoS Hardening**: Strict bounds checking on all RVA and section offset calculations, bounded string parsing (`read_cstring_bounded`), and bounded descriptor/thunk loops to guard against malformed headers, integer overflows, and parser exploitation.
 * **Differential Verification**: Validated against industry-standard tooling, including Python `pefile` on genuine Windows system binaries (`cmd.exe`, `notepad.exe`, `kernel32.dll`, `FileHistory.exe`), ensuring parity in imphash calculation, full export resolution, section parsing, Load Config verification, and Rich Header extraction.
-* **Automated Test Suite**: Includes 49 automated unit, regression, and cross-platform differential tests:
+* **Automated Test Suite**: Includes 50 automated unit, regression, and cross-platform differential tests:
   ```bash
   cargo test
   ```
@@ -302,7 +302,7 @@ cargo install --path .
 - [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
 - [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 - [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
-- [x] Cryptographic Authenticode Validation: Safe ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) with tamper detection.
+- [x] Authenticode PE Hash Verification: Safe zero-allocation ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) against `SpcIndirectDataContent` with tamper detection.
 - [x] YARA Rule Integration: Native pure-Rust rule compilation and scanning against mapped binary memory with tags, namespaces, and string match offsets.
 
 ---

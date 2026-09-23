@@ -1568,7 +1568,7 @@ fn test_authenticode_real_or_synthetic_tamper_detection() {
     let auth = report.authenticode.unwrap();
     assert_eq!(
         auth.status,
-        AuthenticodeStatus::Valid,
+        AuthenticodeStatus::DigestMatch,
         "Authentic binary hash must match signature"
     );
     assert_eq!(auth.digest_algorithm, "SHA256");
@@ -1600,8 +1600,8 @@ fn test_authenticode_real_or_synthetic_tamper_detection() {
     let tampered_auth = tampered_report.authenticode.unwrap();
     assert_eq!(
         tampered_auth.status,
-        AuthenticodeStatus::HashMismatch,
-        "Tampered binary MUST trigger HashMismatch!"
+        AuthenticodeStatus::DigestMismatch,
+        "Tampered binary MUST trigger DigestMismatch!"
     );
     assert_ne!(
         tampered_auth.calculated_digest, tampered_auth.expected_digest,
@@ -1637,6 +1637,179 @@ fn test_authenticode_real_or_synthetic_tamper_detection() {
             "Corrupted ASN.1 DER must yield Malformed status"
         );
     }
+}
+
+#[test]
+fn test_authenticode_synthetic_pe_verification() {
+    use binlens::types::AuthenticodeStatus;
+    use sha2::{Digest, Sha256};
+
+    fn der_tlv(tag: u8, data: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        let len = data.len();
+        if len < 128 {
+            out.push(len as u8);
+        } else if len < 256 {
+            out.push(0x81);
+            out.push(len as u8);
+        } else {
+            out.push(0x82);
+            out.push((len >> 8) as u8);
+            out.push((len & 0xff) as u8);
+        }
+        out.extend_from_slice(data);
+        out
+    }
+
+    let mut pe = vec![0u8; 1536];
+    pe[0..2].copy_from_slice(b"MZ");
+    let pe_off = 0x80usize;
+    pe[0x3c..0x40].copy_from_slice(&(pe_off as u32).to_le_bytes());
+
+    // PE signature
+    pe[pe_off..pe_off + 4].copy_from_slice(b"PE\0\0");
+
+    // COFF file header
+    let coff_off = pe_off + 4;
+    pe[coff_off..coff_off + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // AMD64
+    pe[coff_off + 2..coff_off + 4].copy_from_slice(&1u16.to_le_bytes()); // 1 section
+    let opt_hdr_size = 240u16;
+    pe[coff_off + 16..coff_off + 18].copy_from_slice(&opt_hdr_size.to_le_bytes());
+    pe[coff_off + 18..coff_off + 20].copy_from_slice(&0x0022u16.to_le_bytes());
+
+    // Optional header (PE32+)
+    let opt_off = pe_off + 24;
+    pe[opt_off..opt_off + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
+    pe[opt_off + 16..opt_off + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+    pe[opt_off + 24..opt_off + 32].copy_from_slice(&0x0000000140000000u64.to_le_bytes());
+    pe[opt_off + 32..opt_off + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+    pe[opt_off + 36..opt_off + 40].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[opt_off + 56..opt_off + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+    let size_of_headers = 0x200usize;
+    pe[opt_off + 60..opt_off + 64].copy_from_slice(&(size_of_headers as u32).to_le_bytes());
+    pe[opt_off + 68..opt_off + 70].copy_from_slice(&3u16.to_le_bytes());
+    pe[opt_off + 70..opt_off + 72].copy_from_slice(&0x8160u16.to_le_bytes());
+    pe[opt_off + 108..opt_off + 112].copy_from_slice(&16u32.to_le_bytes());
+
+    // Section table
+    let sec_table_off = opt_off + opt_hdr_size as usize;
+    pe[sec_table_off..sec_table_off + 5].copy_from_slice(b".text");
+    pe[sec_table_off + 8..sec_table_off + 12].copy_from_slice(&0x100u32.to_le_bytes());
+    pe[sec_table_off + 12..sec_table_off + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+    let raw_sec_size = 0x200usize;
+    let raw_sec_off = 0x200usize;
+    pe[sec_table_off + 16..sec_table_off + 20]
+        .copy_from_slice(&(raw_sec_size as u32).to_le_bytes());
+    pe[sec_table_off + 20..sec_table_off + 24].copy_from_slice(&(raw_sec_off as u32).to_le_bytes());
+    pe[sec_table_off + 36..sec_table_off + 40].copy_from_slice(&0x60000020u32.to_le_bytes());
+
+    for b in &mut pe[raw_sec_off..raw_sec_off + raw_sec_size] {
+        *b = 0x90;
+    }
+
+    let sec_dir_entry = opt_off + 112 + 32;
+    let cert_dir_offset = 0x400usize;
+
+    // Compute expected Authenticode SHA-256 hash
+    let checksum_off = opt_off + 64;
+    let mut hasher = Sha256::new();
+    hasher.update(&pe[..checksum_off]);
+    hasher.update(&pe[checksum_off + 4..sec_dir_entry]);
+    hasher.update(&pe[sec_dir_entry + 8..size_of_headers]);
+    hasher.update(&pe[raw_sec_off..raw_sec_off + raw_sec_size]);
+    let expected_digest: [u8; 32] = hasher.finalize().into();
+
+    // Construct PKCS#7 SignedData containing expected_digest
+    let sha256_oid = der_tlv(
+        0x06,
+        &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01],
+    );
+    let algo_id = der_tlv(0x30, &sha256_oid);
+
+    let octet_digest = der_tlv(0x04, &expected_digest);
+    let mut di_body = Vec::new();
+    di_body.extend_from_slice(&algo_id);
+    di_body.extend_from_slice(&octet_digest);
+    let digest_info = der_tlv(0x30, &di_body);
+
+    let dummy_seq = der_tlv(0x30, &[]);
+    let mut spc_body = Vec::new();
+    spc_body.extend_from_slice(&dummy_seq);
+    spc_body.extend_from_slice(&digest_info);
+    let spc_indirect_data = der_tlv(0x30, &spc_body);
+
+    let spc_oid = der_tlv(
+        0x06,
+        &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04],
+    );
+    let explicit_spc = der_tlv(0xa0, &spc_indirect_data);
+    let mut encap_body = Vec::new();
+    encap_body.extend_from_slice(&spc_oid);
+    encap_body.extend_from_slice(&explicit_spc);
+    let encap_content_info = der_tlv(0x30, &encap_body);
+
+    let version = der_tlv(0x02, &[1]);
+    let digest_algos = der_tlv(0x31, &[]);
+    let mut sd_body = Vec::new();
+    sd_body.extend_from_slice(&version);
+    sd_body.extend_from_slice(&digest_algos);
+    sd_body.extend_from_slice(&encap_content_info);
+    let signed_data = der_tlv(0x30, &sd_body);
+
+    let pkcs7_oid = der_tlv(
+        0x06,
+        &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02],
+    );
+    let explicit_sd = der_tlv(0xa0, &signed_data);
+    let mut ci_body = Vec::new();
+    ci_body.extend_from_slice(&pkcs7_oid);
+    ci_body.extend_from_slice(&explicit_sd);
+    let pkcs7_bytes = der_tlv(0x30, &ci_body);
+
+    let dw_length = (8 + pkcs7_bytes.len()) as u32;
+    let cert_entry_size = (dw_length as usize).div_ceil(8) * 8;
+
+    pe.resize(cert_dir_offset + cert_entry_size, 0);
+    pe[cert_dir_offset..cert_dir_offset + 4].copy_from_slice(&dw_length.to_le_bytes());
+    pe[cert_dir_offset + 4..cert_dir_offset + 6].copy_from_slice(&0x0200u16.to_le_bytes());
+    pe[cert_dir_offset + 6..cert_dir_offset + 8].copy_from_slice(&0x0002u16.to_le_bytes());
+    pe[cert_dir_offset + 8..cert_dir_offset + 8 + pkcs7_bytes.len()].copy_from_slice(&pkcs7_bytes);
+
+    pe[sec_dir_entry..sec_dir_entry + 4].copy_from_slice(&(cert_dir_offset as u32).to_le_bytes());
+    pe[sec_dir_entry + 4..sec_dir_entry + 8]
+        .copy_from_slice(&(cert_entry_size as u32).to_le_bytes());
+
+    // 1. Verify uncorrupted synthetic signed PE yields DigestMatch
+    let report = parse_pe(&pe, "synthetic_signed.exe").expect("Must parse synthetic PE");
+    assert!(
+        report.authenticode.is_some(),
+        "Must detect Authenticode table"
+    );
+    let auth = report.authenticode.unwrap();
+    assert_eq!(auth.status, AuthenticodeStatus::DigestMatch);
+    assert_eq!(auth.digest_algorithm, "SHA256");
+    assert_eq!(auth.calculated_digest, auth.expected_digest);
+    assert!(!auth.calculated_digest.is_empty());
+
+    // 2. Tamper single byte in .text section -> must yield DigestMismatch
+    let mut tampered = pe.clone();
+    tampered[raw_sec_off + 16] ^= 0xAA;
+    let tampered_report = parse_pe(&tampered, "synthetic_tampered.exe").expect("Must parse PE");
+    let tampered_auth = tampered_report.authenticode.unwrap();
+    assert_eq!(tampered_auth.status, AuthenticodeStatus::DigestMismatch);
+    assert_ne!(
+        tampered_auth.calculated_digest,
+        tampered_auth.expected_digest
+    );
+
+    // 3. Corrupt ASN.1 PKCS#7 table -> must yield Malformed
+    let mut malformed = pe.clone();
+    for b in &mut malformed[cert_dir_offset + 8..cert_dir_offset + 32] {
+        *b = 0xFF;
+    }
+    let malformed_report = parse_pe(&malformed, "synthetic_malformed.exe").expect("Must parse PE");
+    let malformed_auth = malformed_report.authenticode.unwrap();
+    assert_eq!(malformed_auth.status, AuthenticodeStatus::Malformed);
 }
 
 #[test]

@@ -28,7 +28,7 @@ pub fn compile_rules_from_path(path: &Path) -> Result<boreal::Scanner, String> {
         })?;
     } else if path.is_dir() {
         let mut count = 0;
-        add_rules_from_dir_recursive(&mut compiler, path, &mut count)?;
+        add_rules_from_dir_recursive(&mut compiler, path, &mut count, 0)?;
         if count == 0 {
             return Err(format!(
                 "No .yar or .yara rule files found in directory: {}",
@@ -46,15 +46,23 @@ fn add_rules_from_dir_recursive(
     compiler: &mut Compiler,
     dir: &Path,
     count: &mut usize,
+    depth: usize,
 ) -> Result<(), String> {
+    if depth > 16 || *count >= 1024 {
+        return Ok(());
+    }
+
     let entries = fs::read_dir(dir)
         .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
 
     for entry in entries {
+        if *count >= 1024 {
+            break;
+        }
         let entry = entry.map_err(|e| format!("Directory entry error: {}", e))?;
         let entry_path = entry.path();
         if entry_path.is_dir() {
-            add_rules_from_dir_recursive(compiler, &entry_path, count)?;
+            add_rules_from_dir_recursive(compiler, &entry_path, count, depth + 1)?;
         } else if entry_path.is_file() {
             if let Some(ext) = entry_path.extension() {
                 if ext == "yar" || ext == "yara" {

@@ -101,8 +101,8 @@ pub struct DisassemblyEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthenticodeStatus {
-    Valid,
-    HashMismatch,
+    DigestMatch,
+    DigestMismatch,
     Malformed,
     NotSigned,
 }

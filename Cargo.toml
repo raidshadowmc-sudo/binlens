@@ -2,8 +2,9 @@
 name = "binlens"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 authors = ["raidshadowmc-sudo"]
-description = "Memory-mapped binary inspection, Shannon entropy analysis, and security mitigation auditor for PE and ELF binaries"
+description = "Fast memory-mapped binary inspection, Shannon entropy profiling, Authenticode digest verification, YARA scanning, and security mitigation auditor for PE, ELF, and Mach-O binaries"
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/raidshadowmc-sudo/binlens"
