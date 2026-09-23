@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Linux ELF: ASLR / PIE, NX (GNU_STACK), Full / Partial RELRO, Stack Canary, FORTIFY_SOURCE, dynamic RPATH / RUNPATH security audit.
   - macOS Mach-O: PIE, NX / DEP, W^X segment permissions.
 - **Authenticode PE Hash & Integrity Verification**:
-  - Safe, zero-allocation ASN.1 DER parser for PKCS#7 / CMS `SignedData` structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`).
+  - Safe, bounded ASN.1 DER parser for PKCS#7 / CMS `SignedData` structures (`WIN_CERT_TYPE_PKCS_SIGNED_DATA`).
   - Microsoft Authenticode 5-phase PE image hash calculation (SHA-256, SHA-1, SHA-384, SHA-512) excluding checksum and security directory.
   - Verification of calculated image digest against embedded `SpcIndirectDataContent` expected digest with tamper detection (`DigestMatch` vs `DigestMismatch`).
   - X.509 certificate extraction (Subject, Issuer, Serial Number, Validity, Signature Algorithm).

@@ -193,7 +193,7 @@ Evaluates compilation and linker hardening mechanisms across executable formats:
   * **PE**: Cross-references `IMAGE_DLLCHARACTERISTICS_GUARD_CF` with `IMAGE_LOAD_CONFIG_DIRECTORY`. Validates registered `GuardCFCheckFunctionPointer` (offset 112 for PE32+, offset 72 for PE32) to prevent flag-only false positives.
 * **Structured Exception Handling (SafeSEH / SEH)**:
   * **PE32**: Validates registered exception handlers in Load Configuration (`SEHandlerTable` and `SEHandlerCount`).
-  * **PE32+**: Validates `.pdata` table-based exception handling unless explicitly disabled by `IMAGE_DLLCHARACTERISTICS_NO_SEH`.
+  * **PE32+**: Audits table-based structured exception handling (verifying that `IMAGE_DLLCHARACTERISTICS_NO_SEH` is not set).
 * **W^X Enforcement (No RWX Sections)**:
   * Scans section headers for concurrently writable and executable characteristics (`IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE` on PE; `SHF_WRITE | SHF_EXECINSTR` on ELF).
 * **Authenticode Presence**:
@@ -302,7 +302,7 @@ cargo install --path .
 - [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
 - [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
 - [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
-- [x] Authenticode PE Hash Verification: Safe zero-allocation ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) against `SpcIndirectDataContent` with tamper detection.
+- [x] Authenticode PE Hash Verification: Safe, bounded ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) against `SpcIndirectDataContent` with tamper detection.
 - [x] YARA Rule Integration: Native pure-Rust rule compilation and scanning against mapped binary memory with tags, namespaces, and string match offsets.
 
 ---

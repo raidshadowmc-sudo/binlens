@@ -387,7 +387,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                         break;
                     }
                 }
-                dynstr_offset = resolved_str_off.or(Some(val));
+                dynstr_offset = resolved_str_off;
             } else if tag == 15 {
                 // DT_RPATH
                 rpath_idx = Some(val);
