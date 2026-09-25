@@ -5,7 +5,17 @@ All notable changes to `binlens` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-24
+
+### Documentation & Usability
+- Overhauled README with concise hero summary, crates.io/CI badges, and quick-start command.
+- Streamlined terminal showcase to key visual hooks (file metadata, entropy heatmap, and checksec).
+- Added explicit YARA rule scanning workflows and threat hunting examples.
+- Documented explicit feature limitations (Authenticode `.cat` vs embedded, x86/x86_64 disasm, aggregate dynamic imports) and forward-looking roadmap.
+- Reordered installation documentation to prioritize `cargo install binlens` from crates.io.
+
 ## [0.1.0] - 2026-09-24
+
 
 ### Added
 - **Multi-Format Binary Inspection**:
