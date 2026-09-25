@@ -1,14 +1,24 @@
 # binlens
 
-A memory-mapped binary inspection, Shannon entropy analyzer, compiler telemetry decoder, and exploit mitigation auditor for Windows Portable Executable (PE), Linux Executable and Linkable Format (ELF), and macOS / iOS Mach-O (including Universal Fat) binaries. Written in safe, dependency-light Rust.
+checksec, Shannon entropy heatmap, Authenticode digest, Rich Header, and YARA — one CLI, PE / ELF / Mach-O.
+
+[![Crates.io](https://img.shields.io/crates/v/binlens.svg)](https://crates.io/crates/binlens)
+[![CI](https://github.com/raidshadowmc-sudo/binlens/actions/workflows/ci.yml/badge.svg)](https://github.com/raidshadowmc-sudo/binlens/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rustc-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+
+```bash
+cargo install binlens
+binlens scan ./sample.exe
+```
 
 ---
 
 ## Overview
 
-`binlens` is a standalone, single-binary command-line utility built for security engineers, incident responders, malware analysts, and DevSecOps pipelines. It performs static analysis on executable headers, computes continuous block-level entropy distributions, evaluates operating system exploit mitigations, extracts API import/export tables, decodes undocumented compiler telemetry (MSVC Rich Header), and computes standard import hashes without requiring runtime execution, emulators, or heavy disassembler frameworks.
+`binlens` is a standalone, single-binary command-line utility built for security engineers, incident responders, malware analysts, and DevSecOps pipelines. It performs static analysis on executable headers, computes continuous block-level entropy distributions, evaluates operating system exploit mitigations, extracts API import/export tables, decodes undocumented compiler telemetry (MSVC Rich Header), verifies Authenticode PE image hashes, and evaluates YARA rules against mapped binary memory without requiring runtime execution, emulators, or heavy disassembler frameworks.
 
-File parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, avoiding whole-file heap allocations and enabling instant header, checksec, and metadata extraction even on multi-gigabyte files.
+File parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, avoiding whole-file heap allocations and enabling instant triage and metadata extraction even on multi-gigabyte files.
 
 ---
 
@@ -23,8 +33,12 @@ Security auditing and binary triage are frequently fragmented across disparate s
 | **Throughput & Memory** | Zero-copy `memmap2` (minimal heap) | Interpreted overhead (~50–200 ms) | Process spawning overhead |
 | **Shannon Entropy Visualizer** | In-terminal heatmap + histogram | Raw float values only | None |
 | **MSVC Rich Header Decoding**| Built-in with VS toolset mapping | Raw tuples / requires custom parser| None |
+| **Authenticode Integrity** | 5-phase PE image hash vs PKCS#7 | Requires `wintrust` / custom script | None |
+| **YARA Rule Engine** | Built-in (pure Rust / `boreal`) | Requires `yara-python` / C libyara | None |
 | **Differential Analysis (`diff`)**| Built-in structured delta engine | Manual script required | None |
 | **Automated Pipeline Output**| Unified `--json` schema | Custom JSON serializer | Script-dependent JSON |
+
+> **Scope Note**: `binlens` is designed as a fast, zero-dependency static triage and verification tool. It is not an interactive disassembler or emulator, and is not a replacement for heavyweight reverse engineering frameworks like `radare2` / `rabin2`, `LIEF`, or `capa`.
 
 ---
 
@@ -83,51 +97,11 @@ Executing `binlens scan C:\Windows\System32\cmd.exe` provides a comprehensive, u
   │ Authenticode (Embedded) │   FAIL   │ Embedded PKCS#7 table (absent if catalog-signed) │
   │ W^X (No RWX Sections)  │   PASS    │ Prevents writable and executable pages │
   └────────────────────────┴───────────┴─────────────────────────────────────┘
-
-─── [ SECTION HEADERS & INTEGRITY ] ──────────────────────────────────────────
-  ┌────────────┬─────────────┬─────────────┬──────────┬─────────┬──────────────┐
-  │ Name       │ Virt Size   │ Raw Size    │ Flags    │ Entropy │ Status       │
-  ├────────────┼─────────────┼─────────────┼──────────┼─────────┼──────────────┤
-  │ .text      │ 0x38066     │ 0x39000     │ R-X      │  6.26   │ NORMAL       │
-  │ fothk      │ 0x1000      │ 0x1000      │ R-X      │  0.02   │ NORMAL       │
-  │ .rdata     │ 0x9C20      │ 0xA000      │ R--      │  4.93   │ NORMAL       │
-  │ .data      │ 0x1C1E0     │ 0x1000      │ RW-      │  0.55   │ NORMAL       │
-  │ .pdata     │ 0x234C      │ 0x3000      │ R--      │  4.43   │ NORMAL       │
-  │ .didat     │ 0xC0        │ 0x1000      │ RW-      │  0.24   │ NORMAL       │
-  │ .rsrc      │ 0x84F8      │ 0x9000      │ R--      │  4.12   │ NORMAL       │
-  │ .reloc     │ 0x248       │ 0x1000      │ R--      │  1.13   │ NORMAL       │
-  └────────────┴─────────────┴─────────────┴──────────┴─────────┴──────────────┘
-
-─── [ MSVC RICH HEADER (COMPILER TELEMETRY) ] ───────────────────────────────
-  Offset: 0x80 | XOR Key: 0xD7965A3A | Records: 11
-  ┌──────────────────────┬─────────────┬───────────┬─────────────────────────┐
-  │ Tool / Component     │ Build ID    │ Count     │ Identified Version      │
-  ├──────────────────────┼─────────────┼───────────┼─────────────────────────┤
-  │ Utc1930_C            │ 33145       │ 2         │ Visual Studio 2022 (17.0) │
-  │ Utc1800_C            │ 30729       │ 85        │ Visual Studio 2013 (12.0) │
-  │ Import0              │ 0           │ 1313      │ -                       │
-  │ Unknown              │ 0           │ 1         │ -                       │
-  │ Utc1930_LINK         │ 33145       │ 13        │ Visual Studio 2022 (17.0) │
-  │ Utc1930_CVTRES       │ 33145       │ 5         │ Visual Studio 2022 (17.0) │
-  │ Utc1930_EXPORT       │ 33145       │ 31        │ Visual Studio 2022 (17.0) │
-  │ Utc1930_MASM         │ 33145       │ 41        │ Visual Studio 2022 (17.0) │
-  │ Utc1920_C            │ 33145       │ 2         │ Visual Studio 2019 (16.0) │
-  │ Utc1920_CVTRES       │ 33145       │ 1         │ Visual Studio 2019 (16.0) │
-  │ Utc1930_CPP          │ 33145       │ 1         │ Visual Studio 2022 (17.0) │
-  └──────────────────────┴─────────────┴───────────┴─────────────────────────┘
-
-─── [ DETECTED SUSPICIOUS INDICATORS & PATTERNS ] ───────────────────────────
-  [ALERT] Suspicious API/Command : NtQueryInformationProcess
-  [ALERT] Suspicious API/Command : IsDebuggerPresent
-  [ALERT] Suspicious API/Command : GetProcAddress
-  [ALERT] Suspicious API/Command : VirtualAlloc
-  [PATH] Path                   :  :\*
-  [REG] Registry               : Software\Microsoft\Windows NT\CurrentVersion
-  [REG] Registry               : Software\Policies\Microsoft\Windows\System
-  [REG] Registry               : SYSTEM\CurrentControlSet\Control\Session Manager\Environment
 ```
 
-> **Note on Authenticode in `cmd.exe`**: Core Windows system binaries are signed via external catalog files (`.cat` in `%SystemRoot%\System32\CatRoot`) rather than embedded PKCS#7 certificate tables inside the PE header. `binlens checksec` inspects the PE Security Directory for embedded certificates; catalog-signed binaries accurately indicate that no embedded certificate structure is present.
+> **Note**: A full `binlens scan` output also prints the section integrity table with per-section entropy, MSVC Rich Header toolset build telemetry, import/export tables, entry point disassembly preview, and classified strings/IoCs.
+>
+> *(Note on Authenticode in `cmd.exe`: Core Windows system binaries are signed via external catalog files (`.cat`) rather than embedded PKCS#7 certificate tables inside the PE header).*
 
 ---
 
@@ -166,6 +140,17 @@ Audit changes between two consecutive software releases (`v1.0.0` vs `v1.0.1`):
 * Detect unexpected section additions or deletions.
 * Identify newly introduced third-party library imports or dangerous system calls.
 * Catch silent security mitigation regressions (e.g. ASLR, DEP, or CFG dropped during refactoring).
+
+### 5. YARA Rule Scanning & Threat Hunting
+Scan unknown binaries against signature rules or entire rule directories:
+```bash
+# Scan a sample against a single rule or recursive directory
+binlens yara ./sample.exe ./rules/packers.yar
+
+# Full multi-engine audit + YARA matches in one scan
+binlens scan ./sample.exe -r ./rules/
+```
+
 
 ---
 
@@ -257,29 +242,38 @@ Compares two executable binaries side-by-side:
 
 ## Installation
 
-### Prerequisites
-* Rust toolchain (version 1.85 or later, Edition 2024)
-* Cargo package manager
+### 1. From crates.io (Recommended)
+```bash
+cargo install binlens
+```
 
-### Build from Source
+### 2. Prebuilt Binaries (GitHub Releases)
+Pre-compiled standalone binaries and `SHA256SUMS.txt` checksums for Windows (`x86_64`), Linux (`x86_64`), and macOS (`x86_64`, Apple Silicon `aarch64`) are available on [GitHub Releases](https://github.com/raidshadowmc-sudo/binlens/releases).
+
+```bash
+# Verify checksums on Linux / macOS
+sha256sum -c SHA256SUMS.txt
+
+# Or PowerShell on Windows
+Get-FileHash binlens-windows-x86_64.exe -Algorithm SHA256
+```
+
+### 3. Build from Source
+Requires Rust 1.85+ (Edition 2024):
 ```bash
 git clone https://github.com/raidshadowmc-sudo/binlens.git
 cd binlens
 cargo build --release
 ```
+The compiled binary will be located at `target/release/binlens` (or `binlens.exe` on Windows).
 
-The compiled binary will be located at:
-* Windows: `target/release/binlens.exe`
-* Linux: `target/release/binlens`
-* macOS: `target/release/binlens`
+---
 
-### Prebuilt Binaries (GitHub Releases)
-Optimized standalone binaries and SHA-256 checksums for Windows (`x86_64`), Linux (`x86_64`), and macOS (`x86_64`, Apple Silicon `aarch64`) are automatically compiled and published on every release under [GitHub Releases](https://github.com/raidshadowmc-sudo/binlens/releases).
+## Limitations
 
-### Install to System PATH
-```bash
-cargo install --path .
-```
+* **Authenticode Scope**: Validates PE image integrity against embedded `SpcIndirectDataContent` to detect file tampering. Does not evaluate external Windows Catalog (`.cat`) files, full X.509 root CA certificate trust chains, or online CRL/OCSP revocation.
+* **Disassembly Architecture**: Entry point disassembly is powered by `iced-x86` and is available for x86/x86_64 binaries. ARM64 Mach-O binaries display headers, load commands, sections, and mitigations without instruction decoding.
+* **Dynamic Import Scoping**: ELF and Mach-O dynamic symbol imports are currently mapped in aggregate rather than attributed per individual shared library / dylib.
 
 ---
 
@@ -298,15 +292,15 @@ cargo install --path .
 
 ## Roadmap
 
-- [x] MSVC Rich Header Analysis: Parsing and decoding undocumented `@comp.id` compiler and toolset build telemetry.
-- [x] Linux ELF Exploit Mitigations: Stack Canary, FORTIFY_SOURCE, and dynamic RPATH / RUNPATH search path auditing.
-- [x] Entry Point Disassembly Preview: Integration of lightweight instruction decoding (`iced-x86`) for initial basic-block triage.
-- [x] Mach-O Format Support: 64-bit Mach-O and Universal (Fat) binary parsing for macOS and iOS binaries.
-- [x] Authenticode PE Hash Verification: Safe, bounded ASN.1 DER parser for PKCS#7 / CMS SignedData, X.509 certificate extraction, and Microsoft Authenticode PE image hash verification (SHA-256, SHA-1, SHA-384, SHA-512) against `SpcIndirectDataContent` with tamper detection.
-- [x] YARA Rule Integration: Native pure-Rust rule compilation and scanning against mapped binary memory with tags, namespaces, and string match offsets.
+- [ ] Windows Catalog (`.cat`) Authenticode validation for system binaries without embedded signatures.
+- [ ] Complete X.509 root CA trust-chain and CRL/OCSP revocation verification.
+- [ ] ARM64 entry point instruction decoding for Mach-O / Linux ELF binaries.
+- [ ] Per-library import symbol attribution for ELF (`DT_NEEDED`) and Mach-O (`LC_LOAD_DYLIB`).
+- [ ] Configurable Cargo feature flags (`--no-default-features` for minimal footprint builds without YARA/disasm).
 
 ---
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
