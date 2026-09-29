@@ -46,7 +46,7 @@ jobs:
       run: cargo build --release --locked
 
     - name: Run Binary Release Gate (relgate)
-      uses: raidshadowmc-sudo/relgate@main
+      uses: raidshadowmc-sudo/relgate@v0.1.0
       with:
         binary: ${{ matrix.os == 'windows-latest' && 'target/release/binlens.exe' || 'target/release/binlens' }}
         fail-on-degraded: true
