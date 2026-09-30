@@ -45,6 +45,33 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Fetch baseline binary from previous release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          mkdir -p baseline-bin
+          if gh release download --repo ${{ github.repository }} --pattern "*${{ matrix.target }}*" --dir baseline-bin; then
+            cd baseline-bin
+            if compgen -G "*.zip" > /dev/null; then
+              unzip -o *.zip
+            elif compgen -G "*.tar.gz" > /dev/null; then
+              tar -xzf *.tar.gz
+            fi
+            cd ..
+          fi
+
+      - name: Run Binary Release Gate (relgate)
+        uses: raidshadowmc-sudo/relgate@v0.1.2
+        with:
+          binary: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          baseline: ${{ hashFiles(matrix.os == 'windows-latest' && 'baseline-bin/binlens.exe' || 'baseline-bin/binlens') != '' && (matrix.os == 'windows-latest' && 'baseline-bin/binlens.exe' || 'baseline-bin/binlens') || '' }}
+          fail-on-degraded: true
+          require-aslr: true
+          require-dep: true
+          fail-on-rwx: true
+
       - name: Package artifacts (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
