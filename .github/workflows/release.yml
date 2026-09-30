@@ -62,8 +62,8 @@ jobs:
             cd ..
           fi
 
-      - name: Run Binary Release Gate (relgate)
-        uses: raidshadowmc-sudo/relgate@v0.1.2
+      - name: Run Binary Security Gate (binfence)
+        uses: raidshadowmc-sudo/binfence@v0.1.3
         with:
           binary: target/${{ matrix.target }}/release/${{ matrix.bin }}
           baseline: ${{ hashFiles(matrix.os == 'windows-latest' && 'baseline-bin/binlens.exe' || 'baseline-bin/binlens') != '' && (matrix.os == 'windows-latest' && 'baseline-bin/binlens.exe' || 'baseline-bin/binlens') || '' }}
