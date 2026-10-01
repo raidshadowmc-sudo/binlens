@@ -242,20 +242,28 @@ Compares two executable binaries side-by-side:
 
 ## Installation
 
-### 1. From crates.io (Recommended)
-```bash
-cargo install binlens
-```
+### 1. Prebuilt Binaries (Linux, macOS, Windows)
+Pre-compiled standalone binaries and verified checksums for Windows (`x86_64`), Linux (`x86_64`, `aarch64`), and macOS (`x86_64`, Apple Silicon `aarch64`) are available on [GitHub Releases](https://github.com/raidshadowmc-sudo/binlens/releases/latest):
 
-### 2. Prebuilt Binaries (GitHub Releases)
-Pre-compiled standalone binaries and `SHA256SUMS.txt` checksums for Windows (`x86_64`), Linux (`x86_64`), and macOS (`x86_64`, Apple Silicon `aarch64`) are available on [GitHub Releases](https://github.com/raidshadowmc-sudo/binlens/releases).
+| Target Platform | Architecture | Binary Package |
+|---|---|---|
+| **Linux** | `x86_64` (glibc) | [`binlens-*-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/raidshadowmc-sudo/binlens/releases/latest) |
+| **Linux** | `aarch64` (ARM64) | [`binlens-*-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/raidshadowmc-sudo/binlens/releases/latest) |
+| **Windows** | `x86_64` (MSVC) | [`binlens-*-x86_64-pc-windows-msvc.zip`](https://github.com/raidshadowmc-sudo/binlens/releases/latest) |
+| **macOS** | Apple Silicon (`aarch64`) | [`binlens-*-aarch64-apple-darwin.tar.gz`](https://github.com/raidshadowmc-sudo/binlens/releases/latest) |
+| **macOS** | Intel (`x86_64`) | [`binlens-*-x86_64-apple-darwin.tar.gz`](https://github.com/raidshadowmc-sudo/binlens/releases/latest) |
 
 ```bash
 # Verify checksums on Linux / macOS
 sha256sum -c SHA256SUMS.txt
 
 # Or PowerShell on Windows
-Get-FileHash binlens-windows-x86_64.exe -Algorithm SHA256
+Get-FileHash binlens-*.zip -Algorithm SHA256
+```
+
+### 2. From crates.io
+```bash
+cargo install binlens --locked
 ```
 
 ### 3. Build from Source
