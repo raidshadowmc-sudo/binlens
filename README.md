@@ -20,6 +20,10 @@ binlens scan ./sample.exe
 
 File parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, avoiding whole-file heap allocations and enabling instant triage and metadata extraction even on multi-gigabyte files.
 
+### CI/CD Release Enforcement
+
+Need to enforce binary mitigation policies and prevent security regressions directly in CI/CD? Check out [`binfence`](https://github.com/raidshadowmc-sudo/binfence). `binfence` uses `binlens` as its core analysis engine and turns binary analysis into automated release gates, SARIF findings, and GitHub Actions checks.
+
 ---
 
 ## Why binlens?
