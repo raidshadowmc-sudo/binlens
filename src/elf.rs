@@ -7,7 +7,8 @@ use md5::Md5;
 use sha2::{Digest, Sha256};
 
 pub fn read_u16(buf: &[u8], offset: usize, be: bool) -> Option<u16> {
-    if offset + 2 <= buf.len() {
+    let end = offset.checked_add(2)?;
+    if end <= buf.len() {
         if be {
             Some(u16::from_be_bytes([buf[offset], buf[offset + 1]]))
         } else {
@@ -19,7 +20,8 @@ pub fn read_u16(buf: &[u8], offset: usize, be: bool) -> Option<u16> {
 }
 
 pub fn read_u32(buf: &[u8], offset: usize, be: bool) -> Option<u32> {
-    if offset + 4 <= buf.len() {
+    let end = offset.checked_add(4)?;
+    if end <= buf.len() {
         if be {
             Some(u32::from_be_bytes([
                 buf[offset],
@@ -41,7 +43,8 @@ pub fn read_u32(buf: &[u8], offset: usize, be: bool) -> Option<u32> {
 }
 
 pub fn read_u64(buf: &[u8], offset: usize, be: bool) -> Option<u64> {
-    if offset + 8 <= buf.len() {
+    let end = offset.checked_add(8)?;
+    if end <= buf.len() {
         if be {
             Some(u64::from_be_bytes([
                 buf[offset],
@@ -78,7 +81,10 @@ pub fn read_cstring_bounded(buf: &[u8], offset: usize, max_len: usize) -> Option
     if offset >= buf.len() {
         return None;
     }
-    let limit = (offset + max_len).min(buf.len());
+    let limit = offset
+        .checked_add(max_len)
+        .unwrap_or(buf.len())
+        .min(buf.len());
     let mut end = offset;
     while end < limit && buf[end] != 0 {
         end += 1;
@@ -153,22 +159,43 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let mut load_segments = Vec::new();
 
     for i in 0..phnum {
-        let off = phoff + (i * phentsize);
-        if off + phentsize <= data.len() {
+        let off = match i
+            .checked_mul(phentsize)
+            .and_then(|delta| phoff.checked_add(delta))
+        {
+            Some(o) => o,
+            None => break,
+        };
+        if off
+            .checked_add(phentsize)
+            .is_some_and(|end| end <= data.len())
+        {
             let p_type = read_u32(data, off, be).unwrap_or(0);
             if p_type == 1 {
                 // PT_LOAD
                 let (vaddr, offset, filesz) = if is_64 {
                     (
-                        read_u64(data, off + 16, be).unwrap_or(0),
-                        read_u64(data, off + 8, be).unwrap_or(0) as usize,
-                        read_u64(data, off + 32, be).unwrap_or(0) as usize,
+                        off.checked_add(16)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0),
+                        off.checked_add(8)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize,
+                        off.checked_add(32)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize,
                     )
                 } else {
                     (
-                        read_u32(data, off + 8, be).unwrap_or(0) as u64,
-                        read_u32(data, off + 4, be).unwrap_or(0) as usize,
-                        read_u32(data, off + 16, be).unwrap_or(0) as usize,
+                        off.checked_add(8)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as u64,
+                        off.checked_add(4)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize,
+                        off.checked_add(16)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize,
                     )
                 };
                 load_segments.push((vaddr, offset, filesz));
@@ -179,9 +206,13 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 // PT_GNU_STACK
                 has_gnu_stack = true;
                 let flags = if is_64 {
-                    read_u32(data, off + 4, be).unwrap_or(0)
+                    off.checked_add(4)
+                        .and_then(|o| read_u32(data, o, be))
+                        .unwrap_or(0)
                 } else {
-                    read_u32(data, off + 24, be).unwrap_or(0)
+                    off.checked_add(24)
+                        .and_then(|o| read_u32(data, o, be))
+                        .unwrap_or(0)
                 };
                 if (flags & 1) == 0 {
                     // PF_X is NOT set -> NX is enabled!
@@ -196,13 +227,21 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 // PT_DYNAMIC
                 let (off_val, size_val) = if is_64 {
                     (
-                        read_u64(data, off + 8, be).unwrap_or(0) as usize,
-                        read_u64(data, off + 32, be).unwrap_or(0) as usize,
+                        off.checked_add(8)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize,
+                        off.checked_add(32)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize,
                     )
                 } else {
                     (
-                        read_u32(data, off + 4, be).unwrap_or(0) as usize,
-                        read_u32(data, off + 16, be).unwrap_or(0) as usize,
+                        off.checked_add(4)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize,
+                        off.checked_add(16)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize,
                     )
                 };
                 dynamic_offset = Some(off_val);
@@ -216,11 +255,24 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     }
 
     let shstrtab_offset = if shstrndx < shnum {
-        let str_sh_off = shoff + (shstrndx * shentsize);
-        if is_64 {
-            read_u64(data, str_sh_off + 24, be).unwrap_or(0) as usize
+        let str_sh_off = shstrndx
+            .checked_mul(shentsize)
+            .and_then(|delta| shoff.checked_add(delta))
+            .unwrap_or(0);
+        if str_sh_off > 0 {
+            if is_64 {
+                str_sh_off
+                    .checked_add(24)
+                    .and_then(|off| read_u64(data, off, be))
+                    .unwrap_or(0) as usize
+            } else {
+                str_sh_off
+                    .checked_add(16)
+                    .and_then(|off| read_u32(data, off, be))
+                    .unwrap_or(0) as usize
+            }
         } else {
-            read_u32(data, str_sh_off + 16, be).unwrap_or(0) as usize
+            0
         }
     } else {
         0
@@ -238,35 +290,85 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let mut symtab_entsize: usize = if is_64 { 24 } else { 16 };
 
     for i in 0..shnum {
-        let off = shoff + (i * shentsize);
-        if off + shentsize > data.len() {
+        let off = match i
+            .checked_mul(shentsize)
+            .and_then(|delta| shoff.checked_add(delta))
+        {
+            Some(o) => o,
+            None => break,
+        };
+        if off
+            .checked_add(shentsize)
+            .is_none_or(|end| end > data.len())
+        {
             break;
         }
 
         let sh_name_idx = read_u32(data, off, be).unwrap_or(0) as usize;
-        let sh_type = read_u32(data, off + 4, be).unwrap_or(0);
+        let sh_type = off
+            .checked_add(4)
+            .and_then(|o| read_u32(data, o, be))
+            .unwrap_or(0);
         let name = if shstrtab_offset > 0 {
-            read_cstring(data, shstrtab_offset + sh_name_idx)
+            shstrtab_offset
+                .checked_add(sh_name_idx)
+                .and_then(|o| read_cstring(data, o))
                 .unwrap_or_else(|| "unnamed".to_string())
         } else {
             format!("sec_{}", i)
         };
 
         let (addr, sec_offset, size, flags, link, entsize) = if is_64 {
-            let flags = read_u64(data, off + 8, be).unwrap_or(0);
-            let addr = read_u64(data, off + 16, be).unwrap_or(0);
-            let offset = read_u64(data, off + 24, be).unwrap_or(0) as usize;
-            let size = read_u64(data, off + 32, be).unwrap_or(0) as usize;
-            let link = read_u32(data, off + 40, be).unwrap_or(0) as usize;
-            let entsize = read_u64(data, off + 56, be).unwrap_or(0) as usize;
+            let flags = off
+                .checked_add(8)
+                .and_then(|o| read_u64(data, o, be))
+                .unwrap_or(0);
+            let addr = off
+                .checked_add(16)
+                .and_then(|o| read_u64(data, o, be))
+                .unwrap_or(0);
+            let offset = off
+                .checked_add(24)
+                .and_then(|o| read_u64(data, o, be))
+                .unwrap_or(0) as usize;
+            let size = off
+                .checked_add(32)
+                .and_then(|o| read_u64(data, o, be))
+                .unwrap_or(0) as usize;
+            let link = off
+                .checked_add(40)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as usize;
+            let entsize = off
+                .checked_add(56)
+                .and_then(|o| read_u64(data, o, be))
+                .unwrap_or(0) as usize;
             (addr, offset, size, flags, link, entsize)
         } else {
-            let flags = read_u32(data, off + 8, be).unwrap_or(0) as u64;
-            let addr = read_u32(data, off + 12, be).unwrap_or(0) as u64;
-            let offset = read_u32(data, off + 16, be).unwrap_or(0) as usize;
-            let size = read_u32(data, off + 20, be).unwrap_or(0) as usize;
-            let link = read_u32(data, off + 24, be).unwrap_or(0) as usize;
-            let entsize = read_u32(data, off + 36, be).unwrap_or(0) as usize;
+            let flags = off
+                .checked_add(8)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as u64;
+            let addr = off
+                .checked_add(12)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as u64;
+            let offset = off
+                .checked_add(16)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as usize;
+            let size = off
+                .checked_add(20)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as usize;
+            let link = off
+                .checked_add(24)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as usize;
+            let entsize = off
+                .checked_add(36)
+                .and_then(|o| read_u32(data, o, be))
+                .unwrap_or(0) as usize;
             (addr, offset, size, flags, link, entsize)
         };
 
@@ -287,13 +389,23 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                 symtab_entsize = entsize;
             }
             if link < shnum && strtab_offset.is_none() {
-                let link_sh_off = shoff + (link * shentsize);
-                let link_off = if is_64 {
-                    read_u64(data, link_sh_off + 24, be).unwrap_or(0) as usize
-                } else {
-                    read_u32(data, link_sh_off + 16, be).unwrap_or(0) as usize
-                };
-                strtab_offset = Some(link_off);
+                if let Some(link_sh_off) = link
+                    .checked_mul(shentsize)
+                    .and_then(|delta| shoff.checked_add(delta))
+                {
+                    let link_off = if is_64 {
+                        link_sh_off
+                            .checked_add(24)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize
+                    } else {
+                        link_sh_off
+                            .checked_add(16)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize
+                    };
+                    strtab_offset = Some(link_off);
+                }
             }
         }
         if sh_type == 11 || name == ".dynsym" {
@@ -305,13 +417,23 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             }
             // link points to associated string table
             if link < shnum && dynstr_offset.is_none() {
-                let link_sh_off = shoff + (link * shentsize);
-                let link_off = if is_64 {
-                    read_u64(data, link_sh_off + 24, be).unwrap_or(0) as usize
-                } else {
-                    read_u32(data, link_sh_off + 16, be).unwrap_or(0) as usize
-                };
-                dynstr_offset = Some(link_off);
+                if let Some(link_sh_off) = link
+                    .checked_mul(shentsize)
+                    .and_then(|delta| shoff.checked_add(delta))
+                {
+                    let link_off = if is_64 {
+                        link_sh_off
+                            .checked_add(24)
+                            .and_then(|o| read_u64(data, o, be))
+                            .unwrap_or(0) as usize
+                    } else {
+                        link_sh_off
+                            .checked_add(16)
+                            .and_then(|o| read_u32(data, o, be))
+                            .unwrap_or(0) as usize
+                    };
+                    dynstr_offset = Some(link_off);
+                }
             }
         }
 
@@ -323,7 +445,10 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             has_rwx = true;
         }
 
-        let end = (sec_offset + size).min(data.len());
+        let end = sec_offset
+            .checked_add(size)
+            .unwrap_or(data.len())
+            .min(data.len());
         let sec_data = if sec_offset < data.len() {
             &data[sec_offset..end]
         } else {
@@ -355,16 +480,24 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     if let Some(dyn_off) = dynamic_offset {
         let entry_size = if is_64 { 16 } else { 8 };
         let mut curr = dyn_off;
-        while curr + entry_size <= data.len() && (curr - dyn_off) < dynamic_size {
+        while curr
+            .checked_add(entry_size)
+            .is_some_and(|end| end <= data.len())
+            && curr.saturating_sub(dyn_off) < dynamic_size
+        {
             let (tag, val) = if is_64 {
                 (
                     read_u64(data, curr, be).unwrap_or(0),
-                    read_u64(data, curr + 8, be).unwrap_or(0) as usize,
+                    curr.checked_add(8)
+                        .and_then(|o| read_u64(data, o, be))
+                        .unwrap_or(0) as usize,
                 )
             } else {
                 (
                     read_u32(data, curr, be).unwrap_or(0) as u64,
-                    read_u32(data, curr + 4, be).unwrap_or(0) as usize,
+                    curr.checked_add(4)
+                        .and_then(|o| read_u32(data, o, be))
+                        .unwrap_or(0) as usize,
                 )
             };
             if tag == 0 {
@@ -383,7 +516,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                         && (val as u64) < seg_vaddr.saturating_add(seg_filesz as u64)
                     {
                         let delta = (val as u64 - seg_vaddr) as usize;
-                        resolved_str_off = Some(seg_offset + delta);
+                        resolved_str_off = seg_offset.checked_add(delta);
                         break;
                     }
                 }
@@ -411,7 +544,10 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                     has_df_1_pie = true;
                 }
             }
-            curr += entry_size;
+            match curr.checked_add(entry_size) {
+                Some(next) => curr = next,
+                None => break,
+            }
         }
     }
 
@@ -421,15 +557,21 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     if let Some(str_off) = dynstr_offset {
         for idx in needed_indices {
-            if let Some(lib_name) = read_cstring(data, str_off + idx) {
-                needed_libs.push(lib_name);
+            if let Some(target_off) = str_off.checked_add(idx) {
+                if let Some(lib_name) = read_cstring(data, target_off) {
+                    needed_libs.push(lib_name);
+                }
             }
         }
         if let Some(idx) = rpath_idx {
-            rpath = read_cstring(data, str_off + idx);
+            if let Some(target_off) = str_off.checked_add(idx) {
+                rpath = read_cstring(data, target_off);
+            }
         }
         if let Some(idx) = runpath_idx {
-            runpath = read_cstring(data, str_off + idx);
+            if let Some(target_off) = str_off.checked_add(idx) {
+                runpath = read_cstring(data, target_off);
+            }
         }
     }
 
@@ -466,42 +608,69 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     // Parse symbols from .dynsym
     if let (Some(sym_off), Some(str_off)) = (dynsym_offset, dynstr_offset) {
-        let count = dynsym_size / dynsym_entsize;
+        let count = if dynsym_entsize > 0 {
+            dynsym_size / dynsym_entsize
+        } else {
+            0
+        };
         let mut imported_funcs = Vec::new();
 
         for i in 0..count.min(4096) {
-            let s_off = sym_off + (i * dynsym_entsize);
-            if s_off + dynsym_entsize > data.len() {
+            let s_off = match i
+                .checked_mul(dynsym_entsize)
+                .and_then(|delta| sym_off.checked_add(delta))
+            {
+                Some(o) => o,
+                None => break,
+            };
+            if s_off
+                .checked_add(dynsym_entsize)
+                .is_none_or(|end| end > data.len())
+            {
                 break;
             }
             let (st_name, st_info, st_shndx, st_value) = if is_64 {
                 let name_idx = read_u32(data, s_off, be).unwrap_or(0) as usize;
                 let info = data[s_off + 4];
-                let shndx = read_u16(data, s_off + 6, be).unwrap_or(0);
-                let val = read_u64(data, s_off + 8, be).unwrap_or(0);
+                let shndx = s_off
+                    .checked_add(6)
+                    .and_then(|o| read_u16(data, o, be))
+                    .unwrap_or(0);
+                let val = s_off
+                    .checked_add(8)
+                    .and_then(|o| read_u64(data, o, be))
+                    .unwrap_or(0);
                 (name_idx, info, shndx, val)
             } else {
                 let name_idx = read_u32(data, s_off, be).unwrap_or(0) as usize;
-                let val = read_u32(data, s_off + 4, be).unwrap_or(0) as u64;
+                let val = s_off
+                    .checked_add(4)
+                    .and_then(|o| read_u32(data, o, be))
+                    .unwrap_or(0) as u64;
                 let info = data[s_off + 12];
-                let shndx = read_u16(data, s_off + 14, be).unwrap_or(0);
+                let shndx = s_off
+                    .checked_add(14)
+                    .and_then(|o| read_u16(data, o, be))
+                    .unwrap_or(0);
                 (name_idx, info, shndx, val)
             };
 
             if st_name > 0 {
-                if let Some(sym_name) = read_cstring(data, str_off + st_name) {
-                    check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
-                    let bind = st_info >> 4; // STB_GLOBAL=1, STB_WEAK=2
-                    if st_shndx == 0 {
-                        // SHN_UNDEF -> Imported symbol
-                        imported_funcs.push(sym_name);
-                    } else if bind == 1 || bind == 2 {
-                        // Defined global/weak -> Exported symbol
-                        exports.push(ExportInfo {
-                            name: sym_name,
-                            ordinal: i as u32,
-                            rva: st_value as u32,
-                        });
+                if let Some(target_off) = str_off.checked_add(st_name) {
+                    if let Some(sym_name) = read_cstring(data, target_off) {
+                        check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
+                        let bind = st_info >> 4; // STB_GLOBAL=1, STB_WEAK=2
+                        if st_shndx == 0 {
+                            // SHN_UNDEF -> Imported symbol
+                            imported_funcs.push(sym_name);
+                        } else if bind == 1 || bind == 2 {
+                            // Defined global/weak -> Exported symbol
+                            exports.push(ExportInfo {
+                                name: sym_name,
+                                ordinal: i as u32,
+                                rva: st_value as u32,
+                            });
+                        }
                     }
                 }
             }
@@ -529,16 +698,31 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     // Also check .symtab if present (e.g. static binaries or unstripped binaries)
     if (!has_stack_canary || !has_fortify) && symtab_offset.is_some() && strtab_offset.is_some() {
         if let (Some(sym_off), Some(str_off)) = (symtab_offset, strtab_offset) {
-            let count = symtab_size / symtab_entsize;
+            let count = if symtab_entsize > 0 {
+                symtab_size / symtab_entsize
+            } else {
+                0
+            };
             for i in 0..count.min(8192) {
-                let s_off = sym_off + (i * symtab_entsize);
-                if s_off + symtab_entsize > data.len() {
+                let s_off = match i
+                    .checked_mul(symtab_entsize)
+                    .and_then(|delta| sym_off.checked_add(delta))
+                {
+                    Some(o) => o,
+                    None => break,
+                };
+                if s_off
+                    .checked_add(symtab_entsize)
+                    .is_none_or(|end| end > data.len())
+                {
                     break;
                 }
                 let name_idx = read_u32(data, s_off, be).unwrap_or(0) as usize;
                 if name_idx > 0 {
-                    if let Some(sym_name) = read_cstring(data, str_off + name_idx) {
-                        check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
+                    if let Some(target_off) = str_off.checked_add(name_idx) {
+                        if let Some(sym_name) = read_cstring(data, target_off) {
+                            check_sym(&sym_name, &mut has_stack_canary, &mut has_fortify);
+                        }
                     }
                 }
             }

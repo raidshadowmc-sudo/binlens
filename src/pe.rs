@@ -7,7 +7,8 @@ use md5::Md5;
 use sha2::{Digest, Sha256};
 
 pub fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
-    if offset + 2 <= buf.len() {
+    let end = offset.checked_add(2)?;
+    if end <= buf.len() {
         Some(u16::from_le_bytes([buf[offset], buf[offset + 1]]))
     } else {
         None
@@ -15,7 +16,8 @@ pub fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
 }
 
 pub fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
-    if offset + 4 <= buf.len() {
+    let end = offset.checked_add(4)?;
+    if end <= buf.len() {
         Some(u32::from_le_bytes([
             buf[offset],
             buf[offset + 1],
@@ -28,7 +30,8 @@ pub fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
 }
 
 pub fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
-    if offset + 8 <= buf.len() {
+    let end = offset.checked_add(8)?;
+    if end <= buf.len() {
         Some(u64::from_le_bytes([
             buf[offset],
             buf[offset + 1],
@@ -52,7 +55,10 @@ pub fn read_cstring_bounded(buf: &[u8], offset: usize, max_len: usize) -> Option
     if offset >= buf.len() {
         return None;
     }
-    let limit = (offset + max_len).min(buf.len());
+    let limit = offset
+        .checked_add(max_len)
+        .unwrap_or(buf.len())
+        .min(buf.len());
     let mut end = offset;
     while end < limit && buf[end] != 0 {
         end += 1;
@@ -97,7 +103,7 @@ pub fn rva_to_offset(rva: u32, sections: &[RawSection]) -> Option<usize> {
         if rva >= va {
             let delta = rva - va;
             if delta < s.size_of_raw_data {
-                let offset = s.pointer_to_raw_data as usize + delta as usize;
+                let offset = (s.pointer_to_raw_data as usize).checked_add(delta as usize)?;
                 return Some(offset);
             }
         }
@@ -211,13 +217,16 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
     // Search for "Rich" marker between 0x80 and e_lfanew
     let search_slice = &data[0x80..e_lfanew];
     let rich_rel = search_slice.windows(4).position(|w| w == b"Rich")?;
-    let rich_offset = 0x80 + rich_rel;
+    let rich_offset = 0x80usize.checked_add(rich_rel)?;
 
     // After "Rich" marker is the 4-byte XOR key (checksum)
-    if rich_offset + 8 > data.len() {
+    if rich_offset
+        .checked_add(8)
+        .is_none_or(|end| end > data.len())
+    {
         return None;
     }
-    let xor_key = read_u32(data, rich_offset + 4)?;
+    let xor_key = read_u32(data, rich_offset.checked_add(4)?)?;
 
     // Scan backwards in 4-byte increments looking for "DanS" ^ xor_key
     let dans_magic = 0x536E6144_u32; // "DanS" in little endian
@@ -239,7 +248,7 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
     // An adversary could craft an inflated DOS stub (e.g. e_lfanew at 16 MiB) with DanS at 0x80
     // and Rich at 16 MiB to trigger massive heap allocations.
     // Impose a strict maximum length (4 KiB) and record cap (256 entries).
-    if rich_offset <= dans_off + 16 || rich_offset - dans_off > 4096 {
+    if rich_offset <= dans_off.saturating_add(16) || rich_offset.saturating_sub(dans_off) > 4096 {
         return None;
     }
 
@@ -252,10 +261,14 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
     // [dans_off + 12]: 0 ^ xor_key (xor_key itself)
     // Followed by pairs of (comp_id ^ xor_key, count ^ xor_key) up to rich_offset
     let mut entries = Vec::new();
-    let mut entry_off = dans_off + 16;
-    while entry_off + 8 <= rich_offset && entries.len() < MAX_RICH_RECORDS {
+    let mut entry_off = dans_off.checked_add(16)?;
+    while entry_off
+        .checked_add(8)
+        .is_some_and(|end| end <= rich_offset)
+        && entries.len() < MAX_RICH_RECORDS
+    {
         let enc_comp_id = read_u32(data, entry_off)?;
-        let enc_count = read_u32(data, entry_off + 4)?;
+        let enc_count = read_u32(data, entry_off.checked_add(4)?)?;
 
         let comp_id = enc_comp_id ^ xor_key;
         let count = enc_count ^ xor_key;
@@ -274,7 +287,10 @@ pub fn parse_rich_header(data: &[u8], e_lfanew: usize) -> Option<RichHeaderInfo>
             msvc_version: msvc_version.map(|s| s.to_string()),
         });
 
-        entry_off += 8;
+        entry_off = match entry_off.checked_add(8) {
+            Some(next) => next,
+            None => break,
+        };
     }
 
     Some(RichHeaderInfo {
@@ -292,7 +308,7 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         return None;
     }
     let e_lfanew = read_u32(data, 0x3C)? as usize;
-    if e_lfanew + 4 > data.len() {
+    if e_lfanew.checked_add(4).is_none_or(|end| end > data.len()) {
         return None;
     }
     if &data[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
@@ -301,13 +317,20 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     let rich_header = parse_rich_header(data, e_lfanew);
 
-    let coff_offset = e_lfanew + 4;
+    let coff_offset = e_lfanew.checked_add(4)?;
     let machine = read_u16(data, coff_offset)?;
-    let num_sections = read_u16(data, coff_offset + 2)? as usize;
-    let size_of_opt_hdr = read_u16(data, coff_offset + 16)? as usize;
+    let num_sections = coff_offset
+        .checked_add(2)
+        .and_then(|off| read_u16(data, off))? as usize;
+    let size_of_opt_hdr = coff_offset
+        .checked_add(16)
+        .and_then(|off| read_u16(data, off))? as usize;
 
-    let opt_hdr_offset = coff_offset + 20;
-    if opt_hdr_offset + size_of_opt_hdr > data.len() {
+    let opt_hdr_offset = coff_offset.checked_add(20)?;
+    if opt_hdr_offset
+        .checked_add(size_of_opt_hdr)
+        .is_none_or(|end| end > data.len())
+    {
         return None;
     }
 
@@ -318,19 +341,40 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
         _ => return None,
     };
 
-    let entry_point_rva = read_u32(data, opt_hdr_offset + 16)? as u64;
-    let size_of_headers = read_u32(data, opt_hdr_offset + 60).unwrap_or(0x400) as usize;
+    let entry_point_rva = opt_hdr_offset
+        .checked_add(16)
+        .and_then(|off| read_u32(data, off))? as u64;
+    let size_of_headers = opt_hdr_offset
+        .checked_add(60)
+        .and_then(|off| read_u32(data, off))
+        .unwrap_or(0x400) as usize;
 
     let (image_base, subsystem_val, dll_chars, data_dirs_offset) = if is_64 {
-        let base = read_u64(data, opt_hdr_offset + 24).unwrap_or(0x140000000);
-        let sub = read_u16(data, opt_hdr_offset + 68)?;
-        let dll = read_u16(data, opt_hdr_offset + 70)?;
-        (base, sub, dll, opt_hdr_offset + 112)
+        let base = opt_hdr_offset
+            .checked_add(24)
+            .and_then(|off| read_u64(data, off))
+            .unwrap_or(0x140000000);
+        let sub = opt_hdr_offset
+            .checked_add(68)
+            .and_then(|off| read_u16(data, off))?;
+        let dll = opt_hdr_offset
+            .checked_add(70)
+            .and_then(|off| read_u16(data, off))?;
+        let dd = opt_hdr_offset.checked_add(112)?;
+        (base, sub, dll, dd)
     } else {
-        let base = read_u32(data, opt_hdr_offset + 28).unwrap_or(0x400000) as u64;
-        let sub = read_u16(data, opt_hdr_offset + 68)?;
-        let dll = read_u16(data, opt_hdr_offset + 70)?;
-        (base, sub, dll, opt_hdr_offset + 96)
+        let base = opt_hdr_offset
+            .checked_add(28)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0x400000) as u64;
+        let sub = opt_hdr_offset
+            .checked_add(68)
+            .and_then(|off| read_u16(data, off))?;
+        let dll = opt_hdr_offset
+            .checked_add(70)
+            .and_then(|off| read_u16(data, off))?;
+        let dd = opt_hdr_offset.checked_add(96)?;
+        (base, sub, dll, dd)
     };
 
     let arch_str = match machine {
@@ -371,39 +415,83 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     };
 
     let export_dir_rva = read_u32(data, data_dirs_offset).unwrap_or(0);
-    let import_dir_rva = read_u32(data, data_dirs_offset + 8).unwrap_or(0);
-    let cert_dir_offset = read_u32(data, data_dirs_offset + 32).unwrap_or(0) as usize;
-    let cert_dir_size = read_u32(data, data_dirs_offset + 32 + 4).unwrap_or(0) as usize;
-    let load_config_rva = read_u32(data, data_dirs_offset + 80).unwrap_or(0);
+    let import_dir_rva = data_dirs_offset
+        .checked_add(8)
+        .and_then(|off| read_u32(data, off))
+        .unwrap_or(0);
+    let cert_dir_offset = data_dirs_offset
+        .checked_add(32)
+        .and_then(|off| read_u32(data, off))
+        .unwrap_or(0) as usize;
+    let cert_dir_size = data_dirs_offset
+        .checked_add(36)
+        .and_then(|off| read_u32(data, off))
+        .unwrap_or(0) as usize;
+    let load_config_rva = data_dirs_offset
+        .checked_add(80)
+        .and_then(|off| read_u32(data, off))
+        .unwrap_or(0);
 
     // Authenticode Certificate Table check (validates WIN_CERTIFICATE structure presence)
-    if cert_dir_offset > 0 && cert_dir_size >= 8 && cert_dir_offset + cert_dir_size <= data.len() {
+    if cert_dir_offset > 0
+        && cert_dir_size >= 8
+        && cert_dir_offset
+            .checked_add(cert_dir_size)
+            .is_some_and(|end| end <= data.len())
+    {
         let dw_len = read_u32(data, cert_dir_offset).unwrap_or(0) as usize;
-        let w_cert_type = read_u16(data, cert_dir_offset + 6).unwrap_or(0);
+        let w_cert_type = cert_dir_offset
+            .checked_add(6)
+            .and_then(|off| read_u16(data, off))
+            .unwrap_or(0);
         if w_cert_type == 0x0002 && dw_len <= cert_dir_size {
             // WIN_CERT_TYPE_PKCS_SIGNED_DATA certificate table present
             mitigations.authenticode_signed = true;
         }
     }
 
-    let section_headers_offset = opt_hdr_offset + size_of_opt_hdr;
+    let section_headers_offset = opt_hdr_offset.checked_add(size_of_opt_hdr)?;
     let mut raw_sections = Vec::new();
     let mut sections = Vec::new();
 
     for i in 0..num_sections {
-        let sec_offset = section_headers_offset + (i * 40);
-        if sec_offset + 40 > data.len() {
+        let sec_offset = match i
+            .checked_mul(40)
+            .and_then(|delta| section_headers_offset.checked_add(delta))
+        {
+            Some(off) => off,
+            None => break,
+        };
+        if sec_offset
+            .checked_add(40)
+            .is_none_or(|end| end > data.len())
+        {
             break;
         }
         let name_bytes = &data[sec_offset..sec_offset + 8];
         let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(8);
         let name = String::from_utf8_lossy(&name_bytes[..name_end]).to_string();
 
-        let virt_size = read_u32(data, sec_offset + 8).unwrap_or(0);
-        let virt_addr = read_u32(data, sec_offset + 12).unwrap_or(0);
-        let raw_size = read_u32(data, sec_offset + 16).unwrap_or(0);
-        let raw_offset = read_u32(data, sec_offset + 20).unwrap_or(0);
-        let characteristics = read_u32(data, sec_offset + 36).unwrap_or(0);
+        let virt_size = sec_offset
+            .checked_add(8)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0);
+        let virt_addr = sec_offset
+            .checked_add(12)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0);
+        let raw_size = sec_offset
+            .checked_add(16)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0);
+        let raw_offset = sec_offset
+            .checked_add(20)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0);
+        let characteristics = sec_offset
+            .checked_add(36)
+            .and_then(|off| read_u32(data, off))
+            .unwrap_or(0);
 
         raw_sections.push(RawSection {
             virtual_address: virt_addr,
@@ -421,9 +509,14 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             mitigations.has_rwx_sections = true;
         }
 
-        let raw_end = (raw_offset as usize + raw_size as usize).min(data.len());
-        let sec_data = if (raw_offset as usize) < data.len() {
-            &data[raw_offset as usize..raw_end]
+        let raw_off = raw_offset as usize;
+        let raw_sz = raw_size as usize;
+        let raw_end = raw_off
+            .checked_add(raw_sz)
+            .unwrap_or(data.len())
+            .min(data.len());
+        let sec_data = if raw_off < data.len() {
+            &data[raw_off..raw_end]
         } else {
             &[]
         };
@@ -450,15 +543,30 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             if is_64 {
                 // In 64-bit load config:
                 // SecurityCookie is at offset 88 (size >= 96)
-                if lc_size >= 96 && lc_offset + 96 <= data.len() {
-                    let cookie = read_u64(data, lc_offset + 88).unwrap_or(0);
+                if lc_size >= 96
+                    && lc_offset
+                        .checked_add(96)
+                        .is_some_and(|end| end <= data.len())
+                {
+                    let cookie = lc_offset
+                        .checked_add(88)
+                        .and_then(|off| read_u64(data, off))
+                        .unwrap_or(0);
                     if cookie != 0 {
                         mitigations.stack_canary = true;
                     }
                 }
                 // GuardCFCheckFunctionPointer is at offset 112 (size >= 120)
-                if (dll_chars & 0x4000) != 0 && lc_size >= 120 && lc_offset + 120 <= data.len() {
-                    let guard_check = read_u64(data, lc_offset + 112).unwrap_or(0);
+                if (dll_chars & 0x4000) != 0
+                    && lc_size >= 120
+                    && lc_offset
+                        .checked_add(120)
+                        .is_some_and(|end| end <= data.len())
+                {
+                    let guard_check = lc_offset
+                        .checked_add(112)
+                        .and_then(|off| read_u64(data, off))
+                        .unwrap_or(0);
                     if guard_check != 0 {
                         mitigations.cfg = true;
                     }
@@ -466,23 +574,48 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
             } else {
                 // In 32-bit load config:
                 // SecurityCookie is at offset 60 (size >= 64)
-                if lc_size >= 64 && lc_offset + 64 <= data.len() {
-                    let cookie = read_u32(data, lc_offset + 60).unwrap_or(0);
+                if lc_size >= 64
+                    && lc_offset
+                        .checked_add(64)
+                        .is_some_and(|end| end <= data.len())
+                {
+                    let cookie = lc_offset
+                        .checked_add(60)
+                        .and_then(|off| read_u32(data, off))
+                        .unwrap_or(0);
                     if cookie != 0 {
                         mitigations.stack_canary = true;
                     }
                 }
                 // SafeSEH: SEHandlerTable at offset 64, SEHandlerCount at offset 68 (size >= 72)
-                if lc_size >= 72 && lc_offset + 72 <= data.len() {
-                    let se_table = read_u32(data, lc_offset + 64).unwrap_or(0);
-                    let se_count = read_u32(data, lc_offset + 68).unwrap_or(0);
+                if lc_size >= 72
+                    && lc_offset
+                        .checked_add(72)
+                        .is_some_and(|end| end <= data.len())
+                {
+                    let se_table = lc_offset
+                        .checked_add(64)
+                        .and_then(|off| read_u32(data, off))
+                        .unwrap_or(0);
+                    let se_count = lc_offset
+                        .checked_add(68)
+                        .and_then(|off| read_u32(data, off))
+                        .unwrap_or(0);
                     if (dll_chars & 0x0400) == 0 && se_table != 0 && se_count > 0 {
                         mitigations.seh = true;
                     }
                 }
                 // CFG in 32-bit: GuardCFCheckFunctionPointer at offset 72 (size >= 76)
-                if (dll_chars & 0x4000) != 0 && lc_size >= 76 && lc_offset + 76 <= data.len() {
-                    let guard_check = read_u32(data, lc_offset + 72).unwrap_or(0);
+                if (dll_chars & 0x4000) != 0
+                    && lc_size >= 76
+                    && lc_offset
+                        .checked_add(76)
+                        .is_some_and(|end| end <= data.len())
+                {
+                    let guard_check = lc_offset
+                        .checked_add(72)
+                        .and_then(|off| read_u32(data, off))
+                        .unwrap_or(0);
                     if guard_check != 0 {
                         mitigations.cfg = true;
                     }
@@ -496,10 +629,20 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     if import_dir_rva > 0 {
         if let Some(mut imp_offset) = rva_to_offset(import_dir_rva, &raw_sections) {
-            while imp_offset + 20 <= data.len() && imports.len() < 4096 {
+            while imp_offset
+                .checked_add(20)
+                .is_some_and(|end| end <= data.len())
+                && imports.len() < 4096
+            {
                 let orig_first_thunk = read_u32(data, imp_offset).unwrap_or(0);
-                let name_rva = read_u32(data, imp_offset + 12).unwrap_or(0);
-                let first_thunk = read_u32(data, imp_offset + 16).unwrap_or(0);
+                let name_rva = imp_offset
+                    .checked_add(12)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
+                let first_thunk = imp_offset
+                    .checked_add(16)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
 
                 if orig_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
                     break;
@@ -516,7 +659,11 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
                         if let Some(mut thunk_offset) = rva_to_offset(thunk_rva, &raw_sections) {
                             let step = if is_64 { 8 } else { 4 };
-                            while thunk_offset + step <= data.len() && funcs.len() < 65536 {
+                            while thunk_offset
+                                .checked_add(step)
+                                .is_some_and(|end| end <= data.len())
+                                && funcs.len() < 65536
+                            {
                                 let val = if is_64 {
                                     read_u64(data, thunk_offset).unwrap_or(0)
                                 } else {
@@ -541,7 +688,9 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                                     if let Some(func_offset) =
                                         rva_to_offset(func_rva, &raw_sections)
                                     {
-                                        let name = read_cstring(data, func_offset + 2)
+                                        let name = func_offset
+                                            .checked_add(2)
+                                            .and_then(|off| read_cstring(data, off))
                                             .unwrap_or_else(|| "Unknown".to_string());
                                         (name.clone(), name.to_lowercase())
                                     } else {
@@ -558,7 +707,10 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                                 imphash_items.push(format!("{}.{}", dll_stem, imphash_name));
                                 funcs.push(func_name);
 
-                                thunk_offset += step;
+                                match thunk_offset.checked_add(step) {
+                                    Some(next) => thunk_offset = next,
+                                    None => break,
+                                }
                             }
                         }
 
@@ -569,7 +721,10 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                     }
                 }
 
-                imp_offset += 20;
+                match imp_offset.checked_add(20) {
+                    Some(next) => imp_offset = next,
+                    None => break,
+                }
             }
         }
     }
@@ -586,12 +741,30 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     let mut exports = Vec::new();
     if export_dir_rva > 0 {
         if let Some(exp_offset) = rva_to_offset(export_dir_rva, &raw_sections) {
-            if exp_offset + 40 <= data.len() {
-                let base = read_u32(data, exp_offset + 16).unwrap_or(0);
-                let num_names = read_u32(data, exp_offset + 24).unwrap_or(0) as usize;
-                let addr_funcs = read_u32(data, exp_offset + 28).unwrap_or(0);
-                let addr_names = read_u32(data, exp_offset + 32).unwrap_or(0);
-                let addr_ords = read_u32(data, exp_offset + 36).unwrap_or(0);
+            if exp_offset
+                .checked_add(40)
+                .is_some_and(|end| end <= data.len())
+            {
+                let base = exp_offset
+                    .checked_add(16)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
+                let num_names = exp_offset
+                    .checked_add(24)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0) as usize;
+                let addr_funcs = exp_offset
+                    .checked_add(28)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
+                let addr_names = exp_offset
+                    .checked_add(32)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
+                let addr_ords = exp_offset
+                    .checked_add(36)
+                    .and_then(|off| read_u32(data, off))
+                    .unwrap_or(0);
 
                 if let (Some(names_off), Some(ords_off), Some(funcs_off)) = (
                     rva_to_offset(addr_names, &raw_sections),
@@ -599,18 +772,38 @@ pub fn parse_pe(data: &[u8], file_name: &str) -> Option<BinaryReport> {
                     rva_to_offset(addr_funcs, &raw_sections),
                 ) {
                     for i in 0..num_names.min(65536) {
-                        if names_off + (i * 4) + 4 <= data.len()
-                            && ords_off + (i * 2) + 2 <= data.len()
-                        {
-                            let name_rva = read_u32(data, names_off + (i * 4)).unwrap_or(0);
-                            let ordinal_idx =
-                                read_u16(data, ords_off + (i * 2)).unwrap_or(0) as u32;
-                            let ordinal = base + ordinal_idx;
+                        let name_entry_off =
+                            match i.checked_mul(4).and_then(|d| names_off.checked_add(d)) {
+                                Some(off) => off,
+                                None => break,
+                            };
+                        let ord_entry_off =
+                            match i.checked_mul(2).and_then(|d| ords_off.checked_add(d)) {
+                                Some(off) => off,
+                                None => break,
+                            };
 
-                            let func_rva = if funcs_off + (ordinal_idx as usize * 4) + 4
-                                <= data.len()
-                            {
-                                read_u32(data, funcs_off + (ordinal_idx as usize * 4)).unwrap_or(0)
+                        if name_entry_off
+                            .checked_add(4)
+                            .is_some_and(|end| end <= data.len())
+                            && ord_entry_off
+                                .checked_add(2)
+                                .is_some_and(|end| end <= data.len())
+                        {
+                            let name_rva = read_u32(data, name_entry_off).unwrap_or(0);
+                            let ordinal_idx = read_u16(data, ord_entry_off).unwrap_or(0) as u32;
+                            let ordinal = base.checked_add(ordinal_idx).unwrap_or(ordinal_idx);
+
+                            let func_entry_off = (ordinal_idx as usize)
+                                .checked_mul(4)
+                                .and_then(|d| funcs_off.checked_add(d));
+
+                            let func_rva = if let Some(fo) = func_entry_off {
+                                if fo.checked_add(4).is_some_and(|end| end <= data.len()) {
+                                    read_u32(data, fo).unwrap_or(0)
+                                } else {
+                                    0
+                                }
                             } else {
                                 0
                             };

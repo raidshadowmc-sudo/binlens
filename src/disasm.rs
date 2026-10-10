@@ -34,7 +34,10 @@ pub fn disassemble_bytes(
         let ip = instruction.ip();
         let len = instruction.len();
         let start_offset = (ip - base_address) as usize;
-        let end_offset = (start_offset + len).min(code_bytes.len());
+        let end_offset = start_offset
+            .checked_add(len)
+            .unwrap_or(code_bytes.len())
+            .min(code_bytes.len());
         let raw_bytes = if start_offset < code_bytes.len() {
             &code_bytes[start_offset..end_offset]
         } else {
@@ -113,9 +116,10 @@ pub fn disassemble_elf_entry_point(
     };
 
     let offset = segments.iter().find_map(|&(vaddr, off, filesz)| {
-        if entry_point >= vaddr && entry_point < vaddr + filesz as u64 {
+        let seg_end = vaddr.checked_add(filesz as u64)?;
+        if entry_point >= vaddr && entry_point < seg_end {
             let delta = (entry_point - vaddr) as usize;
-            Some(off + delta)
+            off.checked_add(delta)
         } else {
             None
         }

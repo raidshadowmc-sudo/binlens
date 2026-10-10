@@ -67,8 +67,11 @@ pub fn parse_tlv(slice: &[u8]) -> Option<DerElement<'_>> {
     if (len_byte & 0x80) == 0 {
         // Short form length
         let len = len_byte as usize;
-        let header_len = 2;
-        if header_len + len <= slice.len() {
+        let header_len: usize = 2;
+        if header_len
+            .checked_add(len)
+            .is_some_and(|end| end <= slice.len())
+        {
             Some(DerElement {
                 tag,
                 header_len,
@@ -80,7 +83,12 @@ pub fn parse_tlv(slice: &[u8]) -> Option<DerElement<'_>> {
     } else {
         // Long form length
         let num_len_bytes = (len_byte & 0x7f) as usize;
-        if num_len_bytes == 0 || num_len_bytes > 4 || 2 + num_len_bytes > slice.len() {
+        if num_len_bytes == 0
+            || num_len_bytes > 4
+            || 2usize
+                .checked_add(num_len_bytes)
+                .is_none_or(|end| end > slice.len())
+        {
             return None;
         }
 
@@ -90,7 +98,10 @@ pub fn parse_tlv(slice: &[u8]) -> Option<DerElement<'_>> {
         }
 
         let header_len = 2 + num_len_bytes;
-        if header_len + len <= slice.len() {
+        if header_len
+            .checked_add(len)
+            .is_some_and(|end| end <= slice.len())
+        {
             Some(DerElement {
                 tag,
                 header_len,
@@ -113,7 +124,10 @@ pub fn parse_sequence(buf: &[u8]) -> Vec<DerElement<'_>> {
                 break;
             }
             elements.push(elem);
-            offset += step;
+            match offset.checked_add(step) {
+                Some(next) => offset = next,
+                None => break,
+            }
         } else {
             break;
         }
@@ -576,10 +590,18 @@ fn compute_authenticode_hash<D: Digest>(
     hasher.update(&data[..checksum_off]);
 
     // 2. From after CheckSum (4 bytes skipped) up to Security Directory entry
-    hasher.update(&data[checksum_off + 4..sec_dir_entry_offset]);
+    let after_chk = checksum_off
+        .checked_add(4)
+        .unwrap_or(sec_dir_entry_offset)
+        .min(sec_dir_entry_offset);
+    hasher.update(&data[after_chk..sec_dir_entry_offset]);
 
     // 3. From after Security Directory entry (8 bytes skipped) up to size_of_headers
-    hasher.update(&data[sec_dir_entry_offset + 8..size_of_headers]);
+    let after_sec_dir = sec_dir_entry_offset
+        .checked_add(8)
+        .unwrap_or(size_of_headers)
+        .min(size_of_headers);
+    hasher.update(&data[after_sec_dir..size_of_headers]);
 
     // 4. Hash each section's raw data in sorted order
     let mut last_end = size_of_headers;
@@ -587,7 +609,10 @@ fn compute_authenticode_hash<D: Digest>(
         let start = sec.pointer_to_raw_data as usize;
         let raw_size = sec.size_of_raw_data as usize;
         if start > 0 && raw_size > 0 && start < data.len() {
-            let end = (start + raw_size).min(data.len());
+            let end = start
+                .checked_add(raw_size)
+                .unwrap_or(data.len())
+                .min(data.len());
             hasher.update(&data[start..end]);
             if end > last_end {
                 last_end = end;
@@ -618,15 +643,21 @@ pub fn calculate_pe_authenticode_hash(
     raw_sections: &[RawSection],
     algo: &str,
 ) -> Option<String> {
-    let opt_hdr_off = pe_offset + 24;
-    let checksum_off = opt_hdr_off + 64;
+    let opt_hdr_off = pe_offset.checked_add(24)?;
+    let checksum_off = opt_hdr_off.checked_add(64)?;
     let sec_dir_entry_offset = if is_64 {
-        opt_hdr_off + 112 + 32
+        opt_hdr_off.checked_add(112 + 32)?
     } else {
-        opt_hdr_off + 96 + 32
+        opt_hdr_off.checked_add(96 + 32)?
     };
 
-    if checksum_off + 4 > data.len() || sec_dir_entry_offset + 8 > data.len() {
+    if checksum_off
+        .checked_add(4)
+        .is_none_or(|end| end > data.len())
+        || sec_dir_entry_offset
+            .checked_add(8)
+            .is_none_or(|end| end > data.len())
+    {
         return None;
     }
 
@@ -679,7 +710,12 @@ pub fn verify_pe_authenticode(
     size_of_headers: usize,
     raw_sections: &[RawSection],
 ) -> Option<AuthenticodeReport> {
-    if cert_dir_offset == 0 || cert_dir_size < 8 || cert_dir_offset + cert_dir_size > data.len() {
+    if cert_dir_offset == 0
+        || cert_dir_size < 8
+        || cert_dir_offset
+            .checked_add(cert_dir_size)
+            .is_none_or(|end| end > data.len())
+    {
         return None;
     }
 

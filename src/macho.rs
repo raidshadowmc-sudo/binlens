@@ -62,7 +62,8 @@ pub const N_UNDF: u8 = 0x00;
 pub const N_SECT: u8 = 0x0e;
 
 pub fn read_u16(buf: &[u8], offset: usize, be: bool) -> Option<u16> {
-    if offset + 2 <= buf.len() {
+    let end = offset.checked_add(2)?;
+    if end <= buf.len() {
         if be {
             Some(u16::from_be_bytes([buf[offset], buf[offset + 1]]))
         } else {
@@ -74,7 +75,8 @@ pub fn read_u16(buf: &[u8], offset: usize, be: bool) -> Option<u16> {
 }
 
 pub fn read_u32(buf: &[u8], offset: usize, be: bool) -> Option<u32> {
-    if offset + 4 <= buf.len() {
+    let end = offset.checked_add(4)?;
+    if end <= buf.len() {
         if be {
             Some(u32::from_be_bytes([
                 buf[offset],
@@ -96,7 +98,8 @@ pub fn read_u32(buf: &[u8], offset: usize, be: bool) -> Option<u32> {
 }
 
 pub fn read_u64(buf: &[u8], offset: usize, be: bool) -> Option<u64> {
-    if offset + 8 <= buf.len() {
+    let end = offset.checked_add(8)?;
+    if end <= buf.len() {
         if be {
             Some(u64::from_be_bytes([
                 buf[offset],
@@ -129,9 +132,13 @@ pub fn read_cstring_bounded(buf: &[u8], offset: usize, max_len: usize) -> Option
     if offset >= buf.len() {
         return None;
     }
-    let end = (offset + max_len).min(buf.len());
+    let end = offset
+        .checked_add(max_len)
+        .unwrap_or(buf.len())
+        .min(buf.len());
     let null_pos = buf[offset..end].iter().position(|&b| b == 0)?;
-    let slice = &buf[offset..offset + null_pos];
+    let slice_end = offset.checked_add(null_pos)?;
+    let slice = &buf[offset..slice_end];
     String::from_utf8(slice.to_vec()).ok()
 }
 
@@ -196,24 +203,44 @@ fn parse_fat_binary(data: &[u8], file_name: &str, magic: u32) -> Option<BinaryRe
     let arch_header_size = if is_64 { 32 } else { 20 };
 
     for i in 0..nfat_arch.min(32) {
-        let arch_off = 8 + i * arch_header_size;
-        if arch_off + arch_header_size > data.len() {
+        let arch_off = match i
+            .checked_mul(arch_header_size)
+            .and_then(|delta| 8usize.checked_add(delta))
+        {
+            Some(o) => o,
+            None => break,
+        };
+        if arch_off
+            .checked_add(arch_header_size)
+            .is_none_or(|end| end > data.len())
+        {
             break;
         }
 
         let cputype = read_u32(data, arch_off, be)?;
         let offset = if is_64 {
-            read_u64(data, arch_off + 8, be)? as usize
+            arch_off
+                .checked_add(8)
+                .and_then(|o| read_u64(data, o, be))? as usize
         } else {
-            read_u32(data, arch_off + 8, be)? as usize
+            arch_off
+                .checked_add(8)
+                .and_then(|o| read_u32(data, o, be))? as usize
         };
         let size = if is_64 {
-            read_u64(data, arch_off + 16, be)? as usize
+            arch_off
+                .checked_add(16)
+                .and_then(|o| read_u64(data, o, be))? as usize
         } else {
-            read_u32(data, arch_off + 12, be)? as usize
+            arch_off
+                .checked_add(12)
+                .and_then(|o| read_u32(data, o, be))? as usize
         };
 
-        if offset + size <= data.len() {
+        if offset
+            .checked_add(size)
+            .is_some_and(|end| end <= data.len())
+        {
             slices.push(FatSlice {
                 cputype,
                 offset,
@@ -255,11 +282,18 @@ fn parse_single_macho(
     slice_size: usize,
     universal_info: Option<&str>,
 ) -> Option<BinaryReport> {
-    if slice_offset + 28 > data.len() || slice_offset + slice_size > data.len() {
+    if slice_offset
+        .checked_add(28)
+        .is_none_or(|end| end > data.len())
+        || slice_offset
+            .checked_add(slice_size)
+            .is_none_or(|end| end > data.len())
+    {
         return None;
     }
 
-    let slice_data = &data[slice_offset..slice_offset + slice_size];
+    let slice_end = slice_offset.checked_add(slice_size)?;
+    let slice_data = &data[slice_offset..slice_end];
     let magic_le = read_u32(slice_data, 0, false)?;
     let magic_be = read_u32(slice_data, 0, true)?;
 
@@ -330,32 +364,65 @@ fn parse_single_macho(
 
     let mut cmd_offset = header_size;
     for _ in 0..ncmds.min(512) {
-        if cmd_offset + 8 > slice_data.len() {
+        if cmd_offset
+            .checked_add(8)
+            .is_none_or(|end| end > slice_data.len())
+        {
             break;
         }
 
         let cmd = read_u32(slice_data, cmd_offset, be)?;
-        let cmdsize = read_u32(slice_data, cmd_offset + 4, be)? as usize;
+        let cmdsize = cmd_offset
+            .checked_add(4)
+            .and_then(|o| read_u32(slice_data, o, be))? as usize;
 
-        if cmdsize < 8 || cmd_offset + cmdsize > slice_data.len() {
+        if cmdsize < 8
+            || cmd_offset
+                .checked_add(cmdsize)
+                .is_none_or(|end| end > slice_data.len())
+        {
             break;
         }
 
         match cmd {
             LC_SEGMENT_64 => {
                 // 64-bit segment
-                if cmd_offset + 72 <= slice_data.len() {
+                if cmd_offset
+                    .checked_add(72)
+                    .is_some_and(|end| end <= slice_data.len())
+                {
                     let segname_bytes = &slice_data[cmd_offset + 8..cmd_offset + 24];
                     let segname = String::from_utf8_lossy(segname_bytes)
                         .trim_matches('\0')
                         .to_string();
-                    let vmaddr = read_u64(slice_data, cmd_offset + 24, be).unwrap_or(0);
-                    let _vmsize = read_u64(slice_data, cmd_offset + 32, be).unwrap_or(0);
-                    let fileoff = read_u64(slice_data, cmd_offset + 40, be).unwrap_or(0);
-                    let _filesize = read_u64(slice_data, cmd_offset + 48, be).unwrap_or(0);
-                    let maxprot = read_u32(slice_data, cmd_offset + 56, be).unwrap_or(0);
-                    let initprot = read_u32(slice_data, cmd_offset + 60, be).unwrap_or(0);
-                    let nsects = read_u32(slice_data, cmd_offset + 64, be).unwrap_or(0) as usize;
+                    let vmaddr = cmd_offset
+                        .checked_add(24)
+                        .and_then(|o| read_u64(slice_data, o, be))
+                        .unwrap_or(0);
+                    let _vmsize = cmd_offset
+                        .checked_add(32)
+                        .and_then(|o| read_u64(slice_data, o, be))
+                        .unwrap_or(0);
+                    let fileoff = cmd_offset
+                        .checked_add(40)
+                        .and_then(|o| read_u64(slice_data, o, be))
+                        .unwrap_or(0);
+                    let _filesize = cmd_offset
+                        .checked_add(48)
+                        .and_then(|o| read_u64(slice_data, o, be))
+                        .unwrap_or(0);
+                    let maxprot = cmd_offset
+                        .checked_add(56)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0);
+                    let initprot = cmd_offset
+                        .checked_add(60)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0);
+                    let nsects = cmd_offset
+                        .checked_add(64)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as usize;
 
                     if segname == "__TEXT" {
                         text_vmaddr = vmaddr;
@@ -371,9 +438,15 @@ fn parse_single_macho(
                         }
                     }
 
-                    let mut sect_off = cmd_offset + 72;
+                    let mut sect_off = match cmd_offset.checked_add(72) {
+                        Some(o) => o,
+                        None => break,
+                    };
                     for _ in 0..nsects.min(256) {
-                        if sect_off + 80 > slice_data.len() {
+                        if sect_off
+                            .checked_add(80)
+                            .is_none_or(|end| end > slice_data.len())
+                        {
                             break;
                         }
 
@@ -384,9 +457,18 @@ fn parse_single_macho(
                             String::from_utf8_lossy(&slice_data[sect_off + 16..sect_off + 32])
                                 .trim_matches('\0')
                                 .to_string();
-                        let s_addr = read_u64(slice_data, sect_off + 32, be).unwrap_or(0);
-                        let s_size = read_u64(slice_data, sect_off + 40, be).unwrap_or(0);
-                        let s_offset = read_u32(slice_data, sect_off + 48, be).unwrap_or(0);
+                        let s_addr = sect_off
+                            .checked_add(32)
+                            .and_then(|o| read_u64(slice_data, o, be))
+                            .unwrap_or(0);
+                        let s_size = sect_off
+                            .checked_add(40)
+                            .and_then(|o| read_u64(slice_data, o, be))
+                            .unwrap_or(0);
+                        let s_offset = sect_off
+                            .checked_add(48)
+                            .and_then(|o| read_u32(slice_data, o, be))
+                            .unwrap_or(0);
 
                         let readable = (initprot & 1) != 0;
                         let writable = (initprot & 2) != 0;
@@ -398,9 +480,14 @@ fn parse_single_macho(
 
                         let raw_start = s_offset as usize;
                         let raw_len = s_size as usize;
-                        let sec_entropy = if raw_start + raw_len <= slice_data.len() && raw_len > 0
+                        let sec_entropy = if raw_start
+                            .checked_add(raw_len)
+                            .is_some_and(|end| end <= slice_data.len())
+                            && raw_len > 0
                         {
-                            calculate_entropy(&slice_data[raw_start..raw_start + raw_len])
+                            let raw_end =
+                                raw_start.checked_add(raw_len).unwrap_or(slice_data.len());
+                            calculate_entropy(&slice_data[raw_start..raw_end])
                         } else {
                             0.0
                         };
@@ -410,7 +497,7 @@ fn parse_single_macho(
                             name: full_name,
                             virtual_address: s_addr,
                             virtual_size: s_size,
-                            raw_offset: s_offset as u64 + slice_offset as u64,
+                            raw_offset: (s_offset as u64).saturating_add(slice_offset as u64),
                             raw_size: s_size,
                             entropy: sec_entropy,
                             readable,
@@ -419,24 +506,51 @@ fn parse_single_macho(
                             is_rwx,
                         });
 
-                        sect_off += 80;
+                        match sect_off.checked_add(80) {
+                            Some(next) => sect_off = next,
+                            None => break,
+                        }
                     }
                 }
             }
             LC_SEGMENT => {
                 // 32-bit segment
-                if cmd_offset + 56 <= slice_data.len() {
+                if cmd_offset
+                    .checked_add(56)
+                    .is_some_and(|end| end <= slice_data.len())
+                {
                     let segname =
                         String::from_utf8_lossy(&slice_data[cmd_offset + 8..cmd_offset + 24])
                             .trim_matches('\0')
                             .to_string();
-                    let vmaddr = read_u32(slice_data, cmd_offset + 24, be).unwrap_or(0) as u64;
-                    let _vmsize = read_u32(slice_data, cmd_offset + 28, be).unwrap_or(0) as u64;
-                    let fileoff = read_u32(slice_data, cmd_offset + 32, be).unwrap_or(0) as u64;
-                    let _filesize = read_u32(slice_data, cmd_offset + 36, be).unwrap_or(0) as u64;
-                    let maxprot = read_u32(slice_data, cmd_offset + 40, be).unwrap_or(0);
-                    let initprot = read_u32(slice_data, cmd_offset + 44, be).unwrap_or(0);
-                    let nsects = read_u32(slice_data, cmd_offset + 48, be).unwrap_or(0) as usize;
+                    let vmaddr = cmd_offset
+                        .checked_add(24)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as u64;
+                    let _vmsize = cmd_offset
+                        .checked_add(28)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as u64;
+                    let fileoff = cmd_offset
+                        .checked_add(32)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as u64;
+                    let _filesize = cmd_offset
+                        .checked_add(36)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as u64;
+                    let maxprot = cmd_offset
+                        .checked_add(40)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0);
+                    let initprot = cmd_offset
+                        .checked_add(44)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0);
+                    let nsects = cmd_offset
+                        .checked_add(48)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as usize;
 
                     if segname == "__TEXT" {
                         text_vmaddr = vmaddr;
@@ -451,9 +565,15 @@ fn parse_single_macho(
                         }
                     }
 
-                    let mut sect_off = cmd_offset + 56;
+                    let mut sect_off = match cmd_offset.checked_add(56) {
+                        Some(o) => o,
+                        None => break,
+                    };
                     for _ in 0..nsects.min(256) {
-                        if sect_off + 68 > slice_data.len() {
+                        if sect_off
+                            .checked_add(68)
+                            .is_none_or(|end| end > slice_data.len())
+                        {
                             break;
                         }
 
@@ -464,9 +584,18 @@ fn parse_single_macho(
                             String::from_utf8_lossy(&slice_data[sect_off + 16..sect_off + 32])
                                 .trim_matches('\0')
                                 .to_string();
-                        let s_addr = read_u32(slice_data, sect_off + 32, be).unwrap_or(0) as u64;
-                        let s_size = read_u32(slice_data, sect_off + 36, be).unwrap_or(0) as u64;
-                        let s_offset = read_u32(slice_data, sect_off + 40, be).unwrap_or(0);
+                        let s_addr = sect_off
+                            .checked_add(32)
+                            .and_then(|o| read_u32(slice_data, o, be))
+                            .unwrap_or(0) as u64;
+                        let s_size = sect_off
+                            .checked_add(36)
+                            .and_then(|o| read_u32(slice_data, o, be))
+                            .unwrap_or(0) as u64;
+                        let s_offset = sect_off
+                            .checked_add(40)
+                            .and_then(|o| read_u32(slice_data, o, be))
+                            .unwrap_or(0);
 
                         let readable = (initprot & 1) != 0;
                         let writable = (initprot & 2) != 0;
@@ -478,9 +607,14 @@ fn parse_single_macho(
 
                         let raw_start = s_offset as usize;
                         let raw_len = s_size as usize;
-                        let sec_entropy = if raw_start + raw_len <= slice_data.len() && raw_len > 0
+                        let sec_entropy = if raw_start
+                            .checked_add(raw_len)
+                            .is_some_and(|end| end <= slice_data.len())
+                            && raw_len > 0
                         {
-                            calculate_entropy(&slice_data[raw_start..raw_start + raw_len])
+                            let raw_end =
+                                raw_start.checked_add(raw_len).unwrap_or(slice_data.len());
+                            calculate_entropy(&slice_data[raw_start..raw_end])
                         } else {
                             0.0
                         };
@@ -490,7 +624,7 @@ fn parse_single_macho(
                             name: full_name,
                             virtual_address: s_addr,
                             virtual_size: s_size,
-                            raw_offset: s_offset as u64 + slice_offset as u64,
+                            raw_offset: (s_offset as u64).saturating_add(slice_offset as u64),
                             raw_size: s_size,
                             entropy: sec_entropy,
                             readable,
@@ -499,14 +633,23 @@ fn parse_single_macho(
                             is_rwx,
                         });
 
-                        sect_off += 68;
+                        match sect_off.checked_add(68) {
+                            Some(next) => sect_off = next,
+                            None => break,
+                        }
                     }
                 }
             }
             LC_MAIN => {
                 // Modern entry point: entryoff at offset 8 (u64)
-                if cmd_offset + 16 <= slice_data.len() {
-                    let entryoff = read_u64(slice_data, cmd_offset + 8, be).unwrap_or(0);
+                if cmd_offset
+                    .checked_add(16)
+                    .is_some_and(|end| end <= slice_data.len())
+                {
+                    let entryoff = cmd_offset
+                        .checked_add(8)
+                        .and_then(|o| read_u64(slice_data, o, be))
+                        .unwrap_or(0);
                     entry_point_fileoff = entryoff;
                     entry_point_vaddr =
                         text_vmaddr.wrapping_add(entryoff.saturating_sub(text_fileoff));
@@ -514,21 +657,40 @@ fn parse_single_macho(
             }
             LC_UNIXTHREAD | LC_THREAD => {
                 // Legacy thread entry point: rip/eip located in thread state registers
-                if entry_point_vaddr == 0 && cmd_offset + 16 <= slice_data.len() {
-                    let flavor = read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0);
+                if entry_point_vaddr == 0
+                    && cmd_offset
+                        .checked_add(16)
+                        .is_some_and(|end| end <= slice_data.len())
+                {
+                    let flavor = cmd_offset
+                        .checked_add(8)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0);
                     // x86_THREAD_STATE64 (flavor 4), RIP is at reg offset 16*8 = 128 from state start
-                    if flavor == 4 && cmd_offset + 16 + 144 <= slice_data.len() {
-                        let rip = read_u64(slice_data, cmd_offset + 16 + 128, be).unwrap_or(0);
+                    if flavor == 4
+                        && cmd_offset
+                            .checked_add(16 + 144)
+                            .is_some_and(|end| end <= slice_data.len())
+                    {
+                        let rip = cmd_offset
+                            .checked_add(16 + 128)
+                            .and_then(|o| read_u64(slice_data, o, be))
+                            .unwrap_or(0);
                         if rip > 0 {
                             entry_point_vaddr = rip;
                             if rip >= text_vmaddr {
                                 entry_point_fileoff = rip - text_vmaddr;
                             }
                         }
-                    } else if cmd_offset + 16 + 48 <= slice_data.len() {
+                    } else if cmd_offset
+                        .checked_add(16 + 48)
+                        .is_some_and(|end| end <= slice_data.len())
+                    {
                         // 32-bit x86_THREAD_STATE (flavor 1), EIP is at reg offset 10*4 = 40 from state start
-                        let eip =
-                            read_u32(slice_data, cmd_offset + 16 + 40, be).unwrap_or(0) as u64;
+                        let eip = cmd_offset
+                            .checked_add(16 + 40)
+                            .and_then(|o| read_u32(slice_data, o, be))
+                            .unwrap_or(0) as u64;
                         if eip > 0 {
                             entry_point_vaddr = eip;
                             if eip >= text_vmaddr {
@@ -539,35 +701,49 @@ fn parse_single_macho(
                 }
             }
             LC_LOAD_DYLIB | LC_LOAD_WEAK_DYLIB | LC_REEXPORT_DYLIB => {
-                if cmd_offset + 16 <= slice_data.len() {
-                    let name_offset =
-                        read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0) as usize;
-                    if name_offset < cmdsize && cmd_offset + name_offset < slice_data.len() {
-                        let max_len = cmdsize.saturating_sub(name_offset);
-                        if let Some(dylib_path) =
-                            read_cstring_bounded(slice_data, cmd_offset + name_offset, max_len)
-                        {
-                            imported_libs.push(dylib_path);
+                if cmd_offset
+                    .checked_add(16)
+                    .is_some_and(|end| end <= slice_data.len())
+                {
+                    let name_offset = cmd_offset
+                        .checked_add(8)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as usize;
+                    if let Some(target_off) = cmd_offset.checked_add(name_offset) {
+                        if name_offset < cmdsize && target_off < slice_data.len() {
+                            let max_len = cmdsize.saturating_sub(name_offset);
+                            if let Some(dylib_path) =
+                                read_cstring_bounded(slice_data, target_off, max_len)
+                            {
+                                imported_libs.push(dylib_path);
+                            }
                         }
                     }
                 }
             }
             LC_RPATH => {
-                if cmd_offset + 16 <= slice_data.len() {
-                    let path_offset =
-                        read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0) as usize;
-                    if path_offset < cmdsize && cmd_offset + path_offset < slice_data.len() {
-                        let max_len = cmdsize.saturating_sub(path_offset);
-                        if let Some(rpath_str) =
-                            read_cstring_bounded(slice_data, cmd_offset + path_offset, max_len)
-                        {
-                            match &mut mitigations.rpath {
-                                Some(existing) => {
-                                    existing.push(':');
-                                    existing.push_str(&rpath_str);
-                                }
-                                None => {
-                                    mitigations.rpath = Some(rpath_str);
+                if cmd_offset
+                    .checked_add(16)
+                    .is_some_and(|end| end <= slice_data.len())
+                {
+                    let path_offset = cmd_offset
+                        .checked_add(8)
+                        .and_then(|o| read_u32(slice_data, o, be))
+                        .unwrap_or(0) as usize;
+                    if let Some(target_off) = cmd_offset.checked_add(path_offset) {
+                        if path_offset < cmdsize && target_off < slice_data.len() {
+                            let max_len = cmdsize.saturating_sub(path_offset);
+                            if let Some(rpath_str) =
+                                read_cstring_bounded(slice_data, target_off, max_len)
+                            {
+                                match &mut mitigations.rpath {
+                                    Some(existing) => {
+                                        existing.push(':');
+                                        existing.push_str(&rpath_str);
+                                    }
+                                    None => {
+                                        mitigations.rpath = Some(rpath_str);
+                                    }
                                 }
                             }
                         }
@@ -578,73 +754,116 @@ fn parse_single_macho(
                 // Embedded code signature present in binary
                 mitigations.authenticode_signed = true;
             }
-            LC_SYMTAB if cmd_offset + 24 <= slice_data.len() => {
-                let symoff = read_u32(slice_data, cmd_offset + 8, be).unwrap_or(0) as usize;
-                let nsyms = read_u32(slice_data, cmd_offset + 12, be).unwrap_or(0) as usize;
-                let stroff = read_u32(slice_data, cmd_offset + 16, be).unwrap_or(0) as usize;
-                let strsize = read_u32(slice_data, cmd_offset + 20, be).unwrap_or(0) as usize;
+            LC_SYMTAB
+                if cmd_offset
+                    .checked_add(24)
+                    .is_some_and(|end| end <= slice_data.len()) =>
+            {
+                let symoff = cmd_offset
+                    .checked_add(8)
+                    .and_then(|o| read_u32(slice_data, o, be))
+                    .unwrap_or(0) as usize;
+                let nsyms = cmd_offset
+                    .checked_add(12)
+                    .and_then(|o| read_u32(slice_data, o, be))
+                    .unwrap_or(0) as usize;
+                let stroff = cmd_offset
+                    .checked_add(16)
+                    .and_then(|o| read_u32(slice_data, o, be))
+                    .unwrap_or(0) as usize;
+                let strsize = cmd_offset
+                    .checked_add(20)
+                    .and_then(|o| read_u32(slice_data, o, be))
+                    .unwrap_or(0) as usize;
                 symtab_info = Some((symoff, nsyms, stroff, strsize));
             }
             _ => {}
         }
 
-        cmd_offset += cmdsize;
+        match cmd_offset.checked_add(cmdsize) {
+            Some(next) => cmd_offset = next,
+            None => break,
+        }
     }
 
     // Process symbol table for Canary, FORTIFY, and Imported/Exported symbols
     if let Some((symoff, nsyms, stroff, strsize)) = symtab_info {
         let nlist_size = if is_64 { 16 } else { 12 };
-        let str_end = (stroff + strsize).min(slice_data.len());
+        let str_end = stroff
+            .checked_add(strsize)
+            .unwrap_or(slice_data.len())
+            .min(slice_data.len());
 
         for i in 0..nsyms.min(16384) {
-            let ent_off = symoff + i * nlist_size;
-            if ent_off + nlist_size > slice_data.len() {
+            let ent_off = match i
+                .checked_mul(nlist_size)
+                .and_then(|d| symoff.checked_add(d))
+            {
+                Some(o) => o,
+                None => break,
+            };
+            if ent_off
+                .checked_add(nlist_size)
+                .is_none_or(|end| end > slice_data.len())
+            {
                 break;
             }
 
             let n_strx = read_u32(slice_data, ent_off, be).unwrap_or(0) as usize;
             let n_type = slice_data[ent_off + 4];
             let _n_sect = slice_data[ent_off + 5];
-            let _n_desc = read_u16(slice_data, ent_off + 6, be).unwrap_or(0);
+            let _n_desc = ent_off
+                .checked_add(6)
+                .and_then(|o| read_u16(slice_data, o, be))
+                .unwrap_or(0);
             let n_value = if is_64 {
-                read_u64(slice_data, ent_off + 8, be).unwrap_or(0)
+                ent_off
+                    .checked_add(8)
+                    .and_then(|o| read_u64(slice_data, o, be))
+                    .unwrap_or(0)
             } else {
-                read_u32(slice_data, ent_off + 8, be).unwrap_or(0) as u64
+                ent_off
+                    .checked_add(8)
+                    .and_then(|o| read_u32(slice_data, o, be))
+                    .unwrap_or(0) as u64
             };
 
-            let str_abs = stroff + n_strx;
-            if n_strx > 0 && str_abs < str_end {
-                let max_len = str_end.saturating_sub(str_abs);
-                if let Some(sym_name) = read_cstring_bounded(slice_data, str_abs, max_len) {
-                    // Check for Stack Canary
-                    if sym_name.contains("stack_chk_fail") || sym_name.contains("stack_chk_guard") {
-                        mitigations.stack_canary = true;
-                    }
+            if let Some(str_abs) = stroff.checked_add(n_strx) {
+                if n_strx > 0 && str_abs < str_end {
+                    let max_len = str_end.saturating_sub(str_abs);
+                    if let Some(sym_name) = read_cstring_bounded(slice_data, str_abs, max_len) {
+                        // Check for Stack Canary
+                        if sym_name.contains("stack_chk_fail")
+                            || sym_name.contains("stack_chk_guard")
+                        {
+                            mitigations.stack_canary = true;
+                        }
 
-                    // Check for FORTIFY_SOURCE
-                    if sym_name.contains("_chk")
-                        && (sym_name.contains("memcpy")
-                            || sym_name.contains("printf")
-                            || sym_name.contains("sprintf")
-                            || sym_name.contains("strcpy")
-                            || sym_name.contains("memset"))
-                    {
-                        mitigations.fortify = true;
-                    }
+                        // Check for FORTIFY_SOURCE
+                        if sym_name.contains("_chk")
+                            && (sym_name.contains("memcpy")
+                                || sym_name.contains("printf")
+                                || sym_name.contains("sprintf")
+                                || sym_name.contains("strcpy")
+                                || sym_name.contains("memset"))
+                        {
+                            mitigations.fortify = true;
+                        }
 
-                    // Classification: N_EXT means external/global
-                    if (n_type & N_EXT) != 0 {
-                        let type_bits = n_type & N_TYPE;
-                        if type_bits == N_UNDF {
-                            // Undefined / imported symbol
-                            imported_funcs.push(sym_name);
-                        } else if type_bits == N_SECT {
-                            // Defined in section / exported symbol
-                            exports.push(ExportInfo {
-                                name: sym_name,
-                                ordinal: i as u32,
-                                rva: n_value as u32,
-                            });
+                        // Classification: N_EXT means external/global
+                        if (n_type & N_EXT) != 0 {
+                            let type_bits = n_type & N_TYPE;
+                            if type_bits == N_UNDF {
+                                // Undefined / imported symbol
+                                imported_funcs.push(sym_name);
+                            } else if type_bits == N_SECT {
+                                // Defined in section / exported symbol
+                                exports.push(ExportInfo {
+                                    name: sym_name,
+                                    ordinal: i as u32,
+                                    rva: n_value as u32,
+                                });
+                            }
                         }
                     }
                 }
