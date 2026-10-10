@@ -608,11 +608,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
 
     // Parse symbols from .dynsym
     if let (Some(sym_off), Some(str_off)) = (dynsym_offset, dynstr_offset) {
-        let count = if dynsym_entsize > 0 {
-            dynsym_size / dynsym_entsize
-        } else {
-            0
-        };
+        let count = dynsym_size.checked_div(dynsym_entsize).unwrap_or(0);
         let mut imported_funcs = Vec::new();
 
         for i in 0..count.min(4096) {
@@ -698,11 +694,7 @@ pub fn parse_elf(data: &[u8], file_name: &str) -> Option<BinaryReport> {
     // Also check .symtab if present (e.g. static binaries or unstripped binaries)
     if (!has_stack_canary || !has_fortify) && symtab_offset.is_some() && strtab_offset.is_some() {
         if let (Some(sym_off), Some(str_off)) = (symtab_offset, strtab_offset) {
-            let count = if symtab_entsize > 0 {
-                symtab_size / symtab_entsize
-            } else {
-                0
-            };
+            let count = symtab_size.checked_div(symtab_entsize).unwrap_or(0);
             for i in 0..count.min(8192) {
                 let s_off = match i
                     .checked_mul(symtab_entsize)
