@@ -6,6 +6,7 @@ checksec, Shannon entropy heatmap, Authenticode digest, Rich Header, and YARA �
 [![CI](https://github.com/raidshadowmc-sudo/binlens/actions/workflows/ci.yml/badge.svg)](https://github.com/raidshadowmc-sudo/binlens/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rustc-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![CI/CD Gate: binfence](https://img.shields.io/badge/CI%2FCD%20Gate-binfence-blue)](https://github.com/raidshadowmc-sudo/binfence)
 
 ```bash
 cargo install binlens
@@ -20,9 +21,60 @@ binlens scan ./sample.exe
 
 File parsing is backed by memory-mapped I/O (`memmap2`) with strict offset and bounds validation, avoiding whole-file heap allocations and enabling instant triage and metadata extraction even on multi-gigabyte files.
 
-### CI/CD Release Enforcement
+---
 
-Need to enforce binary mitigation policies and prevent security regressions directly in CI/CD? Check out [`binfence`](https://github.com/raidshadowmc-sudo/binfence). `binfence` uses `binlens` as its core analysis engine and turns binary analysis into automated release gates, SARIF findings, and GitHub Actions checks.
+## Ecosystem: The Binary Security Suite (`binlens` ↔ `binfence`)
+
+`binlens` and [`binfence`](https://github.com/raidshadowmc-sudo/binfence) are sister projects designed to form a complete lifecycle for binary security auditing:
+
+```text
+                           ┌────────────────────────┐
+                           │      Target Binary     │
+                           │   (PE / ELF / Mach-O)  │
+                           └───────────┬────────────┘
+                                       │
+            ┌──────────────────────────┴──────────────────────────┐
+            ▼                                                     ▼
+┌──────────────────────────────┐                       ┌──────────────────────────────┐
+│           binlens            │                       │           binfence           │
+│   Deep Inspection Engine     │                       │    CI/CD Release Gate        │
+├──────────────────────────────┤                       ├──────────────────────────────┤
+│ • Interactive CLI triage     │                       │ • Automated GitHub Actions   │
+│ • Shannon entropy heatmaps   │                       │ • Baseline regression audit  │
+│ • Rich Header & compiler IDs │   shared core lib     │ • Hard policy enforcement    │
+│ • Import / Export resolution │◄─────────────────────►│ • SARIF v2.1.0 generation     │
+│ • Disassembly & YARA scans   │    (binlens crate)    │ • GITHUB_STEP_SUMMARY tables │
+│ • Multi-format diffing       │                       │ • Non-zero exit code on fail │
+└──────────────┬───────────────┘                       └──────────────┬───────────────┘
+               │                                                      │
+               ▼                                                      ▼
+   Developer / Analyst Triage                              Production Release Gate
+   (Interactive Investigation)                              (Automated CI Enforcement)
+```
+
+### When to Use Which Tool?
+
+| Task / Persona | Recommended Tool | Command / Action |
+|---|---|---|
+| **Investigating an unknown binary or malware** | `binlens` | `binlens scan ./suspicious.exe` |
+| **Visualizing entropy & unpacking stubs** | `binlens` | `binlens entropy ./sample.bin` |
+| **Comparing two local builds interactively** | `binlens` | `binlens diff ./v1.exe ./v2.exe` |
+| **Decoding Entry Point instructions (x86/x64)** | `binlens` | `binlens disasm ./sample.exe` |
+| **Enforcing policy gates on release builds** | `binfence` | `binfence --binary ./target/release/app` |
+| **Detecting mitigation regression vs baseline in CI** | `binfence` | `binfence --binary ./new --baseline ./old` |
+| **Publishing security alerts to GitHub Security tab** | `binfence` | `uses: raidshadowmc-sudo/binfence@v0.1.3` |
+
+### Synergy: Triage Workflow When a Gate Fails
+When `binfence` halts a GitHub Actions pipeline with a mitigation drop or an unexpected RWX section:
+1. CI uploads the SARIF report to GitHub Security and fails the job with a descriptive Step Summary.
+2. The developer pulls the baseline asset and reproduces the failure locally with full forensic visibility:
+   ```bash
+   # Pinpoint exact mitigation drift and structural changes
+   binlens diff ./old_release ./new_release
+
+   # Deep-dive into sections, headers, and imported APIs
+   binlens scan ./new_release
+   ```
 
 ---
 
@@ -117,7 +169,11 @@ Executing `binlens scan C:\Windows\System32\cmd.exe` provides a comprehensive, u
 * **Imphash IoC Clustering**: Compute Mandiant-standard Import Hashes (`imphash`) to cluster malware variants belonging to the same actor or campaign, even when payloads are recompiled with altered string tables or code layout.
 
 ### 2. CI/CD Security Gates & DevSecOps
-Enforce binary hardening compliance in your build pipelines. Prevent compilation regressions before artifacts are released:
+Enforce binary hardening compliance in your build pipelines. Prevent compilation regressions before artifacts are released.
+
+> 💡 **Turnkey GitHub Action**: For a ready-to-use release gate with automated baseline diffing, SARIF v2.1.0 security alerts, and Markdown step summaries, see sister project [`binfence`](https://github.com/raidshadowmc-sudo/binfence).
+
+For custom shell pipelines or local scripting, `binlens` emits machine-readable JSON:
 
 ```bash
 # Verify security mitigations on release binary
